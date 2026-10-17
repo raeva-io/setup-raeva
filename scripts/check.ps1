@@ -63,7 +63,9 @@ function Invoke-Frozen {
     if (-not $ecode -and $code -eq 7) { $ecode = 'LOCKFILE_MISMATCH' }
     $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { Get-Content -LiteralPath $json -Raw }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
-    Write-Output "::error file=$(EscProp "$workdir/$lockFile"),title=$(EscProp $title)::$(EscMsg "$message. $(Hint $ecode)")"
+    $lockPath = "$workdir/$lockFile"
+    if ($lockPath.StartsWith('./')) { $lockPath = $lockPath.Substring(2) }
+    Write-Output "::error file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message. $(Hint $ecode)")"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' })).`n`n$(Hint $ecode)"
     exit $code
 }

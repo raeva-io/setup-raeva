@@ -16,6 +16,9 @@ jobs:
   vuln:
     runs-on: ubuntu-latest
     permissions:
+      # upload-sarif reads the workflow run; a private repository refuses
+      # that without actions: read.
+      actions: read
       contents: read
       security-events: write
     steps:

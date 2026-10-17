@@ -101,8 +101,9 @@ image has. On a self-hosted runner without `gh`, set `verify: sha256`.
 
 The cache holds `store` and `metadata.db` from the raeva data directory:
 `~/.local/share/raeva` on Linux, `~/Library/Application Support/raeva` on
-macOS, `%LOCALAPPDATA%\raeva` on Windows, or `$RAEVA_HOME` when it is set. It
-does not hold `config.toml` or credentials.
+macOS, `%LOCALAPPDATA%\raeva` on Windows (`%APPDATA%\raeva` before raeva
+0.5.0), or `$RAEVA_HOME` when it is set. It does not hold `config.toml` or
+credentials.
 
 A pull request restores the cache of its base branch but saves only to its own
 scope. raeva re-hashes a stored file against its pin before `export-m2` copies
@@ -119,11 +120,29 @@ with other bytes. A scheduled job with `cache: false` does.
 - Every input reaches the scripts as an environment variable, never as script
   text.
 - `token` is passed only to the install step, as `GH_TOKEN` for `gh`.
-- A SARIF upload from a run with a read-only token, such as a Dependabot
-  `push`, fails. That step has `continue-on-error`, so the job warns and
-  continues.
+- The SARIF upload needs `security-events: write`, and in a private
+  repository also `actions: read` and GitHub Code Security. A refused upload,
+  such as one from a Dependabot `push` with its read-only token, logs an error
+  but does not fail the job; findings still fail it.
 - `known-checksums.txt` changes only in a reviewed pull request, after the
   release's attestations were verified.
+
+## raeva 0.4
+
+The action also installs raeva 0.4, which ships `rv` in `rv-cli-<target>`
+archives and writes `rv.lock`. It installs the binary as `raeva`, finds
+`rv.lock`, and caches `%APPDATA%\raeva` on Windows. raeva 0.4 writes no error
+code in its JSON output, so the annotation infers `LOCKFILE_MISMATCH` from
+exit code 7 and shows raeva's message for other failures.
+
+raeva 0.4 hashes POM files as they are checked out. On Windows runners git
+converts line endings (`core.autocrlf`), so a lock written on Linux or macOS
+fails `--frozen` there with "module POM changed". raeva 0.5 hashes POMs with
+LF line endings. With 0.4, add this `.gitattributes`:
+
+```
+* text=auto eol=lf
+```
 
 ## Development
 

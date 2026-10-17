@@ -65,7 +65,9 @@ frozen() {
   [[ -n "$ecode" || $code -ne 7 ]] || ecode=LOCKFILE_MISMATCH
   err=$(json_field error "$json")
   [[ -n "$err" ]] || err=$(cat "$json")
-  annotate error "$workdir/$lock_file" "raeva sync --frozen (exit $code${ecode:+, $ecode})" \
+  local lock_path="$workdir/$lock_file"
+  lock_path="${lock_path#./}"
+  annotate error "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" \
     "$err. $(hint_for "$ecode")"
   printf '### raeva\n\n`raeva sync --frozen` failed with exit %s (%s).\n\n%s\n' \
     "$code" "${ecode:-no code}" "$(hint_for "$ecode")" >> "$summary"

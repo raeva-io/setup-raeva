@@ -23,7 +23,8 @@ jobs:
   relock:
     # Only a bot's own push to its own branch in this repository. A fork PR,
     # a PR opened by a person, and a push by anyone else to a bot branch are
-    # all skipped.
+    # all skipped. The paths filter sees the whole pull request, so the lock
+    # commit starts this workflow again; this condition skips it.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == github.actor &&
@@ -74,16 +75,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Optional. A push with the default token does not start CI on the new
-      # commit without approval; a GitHub App token does. Store the App ID as
-      # the variable RELOCK_APP_ID and its key as the secret
-      # RELOCK_APP_PRIVATE_KEY (a Dependabot secret for Dependabot PRs).
+      # Optional. After a push with the default token, GitHub holds the CI
+      # runs of the new commit until someone with write access approves them;
+      # after a push with a GitHub App token, they start at once. Store the
+      # App's client ID as the variable RELOCK_APP_CLIENT_ID and its key as the
+      # secret RELOCK_APP_PRIVATE_KEY (a Dependabot secret for Dependabot PRs;
+      # Dependabot runs see variables, but only Dependabot secrets).
       - id: app
-        if: vars.RELOCK_APP_ID != ''
-        uses: actions/create-github-app-token@v2
+        if: vars.RELOCK_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ vars.RELOCK_APP_ID }}
+          client-id: ${{ vars.RELOCK_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELOCK_APP_PRIVATE_KEY }}
+          permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}

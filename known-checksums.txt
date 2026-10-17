@@ -1,0 +1,9 @@
+# <version> <asset> <sha256>
+# Generated from sha256.sum of each release after its attestation was verified.
+# A release lands here through a reviewed pull request, so a pinned action
+# SHA also pins the archive bytes it accepts for these versions.
+0.4.1 rv-cli-aarch64-apple-darwin.tar.gz 6ed0fd1f7615886bf398ce4e361f058e7767de95c65740fcce10ef62f68aa9c0
+0.4.1 rv-cli-aarch64-unknown-linux-gnu.tar.gz 28529ea82777df2d12e0b61c779ddd02edb6d85336be10345d6d11cd58ce39ec
+0.4.1 rv-cli-x86_64-apple-darwin.tar.gz 9447e0555ec11e312a18665a6465f9cdbe290a950f9c78b53ea59acde92609a0
+0.4.1 rv-cli-x86_64-pc-windows-msvc.zip 70d959d6b38c31357f525d6d34374b8d4f5d206b6855e6a900cd647c259f3152
+0.4.1 rv-cli-x86_64-unknown-linux-gnu.tar.gz c0cae00ea323366254318d54b9f002aac4e470ee54c630bdbe7f6d49e3c0162b

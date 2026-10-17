@@ -1,0 +1,41 @@
+# .gitlab-ci.yml: check raeva.lock, then build with Maven.
+#
+# RAEVA_SHA256 is the line for RAEVA_ARCHIVE in the release's sha256.sum.
+# Pinning it here means a replaced release asset fails the job.
+variables:
+  RAEVA_VERSION: "0.5.0"
+  RAEVA_ARCHIVE: "raeva-x86_64-unknown-linux-gnu.tar.gz"
+  RAEVA_SHA256: "<sha256 from sha256.sum>"
+  # GitLab caches only paths inside the project directory.
+  RAEVA_HOME: "$CI_PROJECT_DIR/.raeva"
+
+.raeva:
+  image: maven:3.9-eclipse-temurin-21
+  cache:
+    key:
+      files: [raeva.lock]
+    paths: [.raeva/store, .raeva/metadata.db]
+  before_script:
+    - mkdir -p .raeva/bin
+    - curl --proto '=https' --tlsv1.2 -fsSL -o .raeva/raeva.tar.gz "https://github.com/raeva-io/raeva/releases/download/v${RAEVA_VERSION}/${RAEVA_ARCHIVE}"
+    - echo "${RAEVA_SHA256}  .raeva/raeva.tar.gz" | sha256sum -c -
+    - tar -xzf .raeva/raeva.tar.gz -C .raeva/bin --strip-components=1 --wildcards '*/raeva'
+    - export PATH="$CI_PROJECT_DIR/.raeva/bin:$PATH"
+    - raeva --version
+
+build:
+  extends: .raeva
+  script:
+    - raeva sync --frozen
+    - raeva export-m2
+    - mvn --batch-mode verify
+
+# SARIF ingestion needs GitLab Ultimate, and GitLab reads the report only
+# from a job that succeeds, so findings (exit 1) do not fail this job.
+vulnerabilities:
+  extends: .raeva
+  script:
+    - raeva vuln --format sarif > raeva.sarif || [ $? -eq 1 ]
+  artifacts:
+    reports:
+      sarif: raeva.sarif

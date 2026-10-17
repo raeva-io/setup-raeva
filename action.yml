@@ -1,0 +1,208 @@
+name: Set up Raeva
+description: Install a pinned and verified raeva, cache its artifact store, and optionally check raeva.lock and scan it for vulnerabilities.
+author: raeva-io
+branding:
+  icon: lock
+  color: blue
+
+inputs:
+  version:
+    description: >-
+      The raeva version to install, such as 0.5.0. Use an exact version so a
+      CLI upgrade is a reviewed change; 'latest' resolves the newest release
+      at run time.
+    required: true
+  verify:
+    description: >-
+      'attestation' checks the SHA-256 and the GitHub build attestation of
+      the release archive with the GitHub CLI. 'sha256' checks the SHA-256
+      only, for runners without gh. There is no option to skip verification.
+    default: attestation
+  token:
+    description: Token that gh uses to fetch attestations. It needs no write scope.
+    default: ${{ github.token }}
+  cache:
+    description: Restore and save the raeva artifact store and metadata cache, keyed by the lock file.
+    default: "true"
+  working-directory:
+    description: The directory that holds the root pom.xml and the lock file, relative to the workspace.
+    default: "."
+  lock-file:
+    description: >-
+      The lock file name. Empty means raeva.lock, or rv.lock when only that
+      exists.
+    default: ""
+  check:
+    description: Run `raeva sync --frozen` after the install.
+    default: "false"
+  platforms:
+    description: >-
+      Platforms for the frozen check, comma separated (linux-x86_64,
+      macos-aarch64). Empty checks the runner's own platform.
+    default: ""
+  relock:
+    description: >-
+      Run `raeva sync` for every platform the lock records (or the platforms
+      input), for a workflow that commits the result. Linux and macOS only.
+      The action never commits or pushes.
+    default: "false"
+  vuln:
+    description: Run `raeva vuln --format sarif` after the frozen check.
+    default: "false"
+  vuln-fail-on:
+    description: >-
+      Fail the job on findings at or above this severity: any, low, medium,
+      high, critical, or never. Unknown severity meets every threshold.
+    default: high
+  sarif-upload:
+    description: >-
+      Upload the SARIF log to GitHub code scanning. The job needs
+      security-events: write. Private repositories need GitHub Code Security.
+    default: "true"
+  sarif-category:
+    description: The code scanning category, so raeva alerts do not replace those of another tool.
+    default: raeva
+  rv-alias:
+    description: Also install the binary as `rv`. In PowerShell, `rv` is an alias of Remove-Variable; call rv.exe there.
+    default: "false"
+  repository:
+    description: The GitHub repository that publishes raeva releases.
+    default: raeva-io/raeva
+  download-base-url:
+    description: >-
+      Download from this URL instead of the GitHub release, for a mirror. It
+      must serve sha256.sum and the archives. Attestations are still checked
+      against the repository input.
+    default: ""
+
+outputs:
+  version:
+    description: The installed version.
+    value: ${{ steps.unix.outputs.version || steps.windows.outputs.version }}
+  bin-dir:
+    description: The directory added to PATH.
+    value: ${{ steps.unix.outputs.bin-dir || steps.windows.outputs.bin-dir }}
+  raeva:
+    description: The full path of the raeva binary.
+    value: ${{ steps.unix.outputs.raeva || steps.windows.outputs.raeva }}
+  lock-file:
+    description: The lock file name the action used.
+    value: ${{ steps.unix.outputs.lock-file || steps.windows.outputs.lock-file }}
+  relocked-platforms:
+    description: The platforms that relock passed to raeva sync.
+    value: ${{ steps.relock.outputs.relocked-platforms }}
+  cache-hit:
+    description: true when the store was restored for this exact lock file.
+    value: ${{ steps.cache.outputs.cache-hit }}
+  sarif-file:
+    description: The path of the SARIF log, when vuln ran and the scan completed.
+    value: ${{ steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file }}
+  vuln-findings:
+    description: The number of results in the SARIF log.
+    value: ${{ steps.scan-unix.outputs.vuln-findings || steps.scan-windows.outputs.vuln-findings }}
+
+runs:
+  using: composite
+  steps:
+    - id: unix
+      if: runner.os != 'Windows'
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/scripts/install.sh"'
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_VERIFY: ${{ inputs.verify }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_DOWNLOAD_BASE_URL: ${{ inputs.download-base-url }}
+        INPUT_RV_ALIAS: ${{ inputs.rv-alias }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_LOCK_FILE: ${{ inputs.lock-file }}
+        GH_TOKEN: ${{ inputs.token }}
+
+    - id: windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: '& "$env:GITHUB_ACTION_PATH/scripts/install.ps1"'
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_VERIFY: ${{ inputs.verify }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_DOWNLOAD_BASE_URL: ${{ inputs.download-base-url }}
+        INPUT_RV_ALIAS: ${{ inputs.rv-alias }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_LOCK_FILE: ${{ inputs.lock-file }}
+        GH_TOKEN: ${{ inputs.token }}
+
+    # The cache is saved at the end of the job. A pull request can read the
+    # base branch's cache but writes only to its own scope, and raeva
+    # re-hashes each stored file against its pin before export-m2 uses it.
+    - id: cache
+      if: inputs.cache == 'true' && (steps.unix.outputs.cache-key || steps.windows.outputs.cache-key)
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.unix.outputs.cache-paths || steps.windows.outputs.cache-paths }}
+        key: ${{ steps.unix.outputs.cache-key || steps.windows.outputs.cache-key }}
+        restore-keys: ${{ steps.unix.outputs.cache-restore-key || steps.windows.outputs.cache-restore-key }}
+
+    - id: relock
+      if: inputs.relock == 'true'
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = Windows ]; then
+          echo "::error title=setup-raeva::relock runs on Linux and macOS runners"
+          exit 1
+        fi
+        "$GITHUB_ACTION_PATH/scripts/check.sh" relock
+      env:
+        RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
+        LOCK_FILE: ${{ steps.unix.outputs.lock-file }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+
+    - id: scan-unix
+      if: runner.os != 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true')
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/scripts/check.sh" scan'
+      env:
+        RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
+        LOCK_FILE: ${{ steps.unix.outputs.lock-file }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_CHECK: ${{ inputs.check }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_VULN: ${{ inputs.vuln }}
+        INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+
+    - id: scan-windows
+      if: runner.os == 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true')
+      shell: pwsh
+      run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" scan'
+      env:
+        RAEVA_BIN: ${{ steps.windows.outputs.raeva }}
+        LOCK_FILE: ${{ steps.windows.outputs.lock-file }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_CHECK: ${{ inputs.check }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_VULN: ${{ inputs.vuln }}
+        INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+
+    # A push by Dependabot runs with a read-only token and the upload is
+    # refused, so a failed upload warns instead of failing the job.
+    - if: inputs.vuln == 'true' && inputs.sarif-upload == 'true' && (steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file)
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+      with:
+        sarif_file: ${{ steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file }}
+        category: ${{ inputs.sarif-category }}
+
+    - if: inputs.vuln == 'true' && runner.os != 'Windows'
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/scripts/check.sh" gate'
+      env:
+        VULN_EXIT_CODE: ${{ steps.scan-unix.outputs.vuln-exit-code }}
+        INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+
+    - if: inputs.vuln == 'true' && runner.os == 'Windows'
+      shell: pwsh
+      run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" gate'
+      env:
+        VULN_EXIT_CODE: ${{ steps.scan-windows.outputs.vuln-exit-code }}
+        INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}

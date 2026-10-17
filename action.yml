@@ -94,6 +94,9 @@ outputs:
   cache-hit:
     description: true when the store was restored for this exact lock file.
     value: ${{ steps.cache.outputs.cache-hit }}
+  frozen-exit-code:
+    description: The exit code of `raeva sync --frozen`, when check ran.
+    value: ${{ steps.scan-unix.outputs.frozen-exit-code || steps.scan-windows.outputs.frozen-exit-code }}
   sarif-file:
     description: The path of the SARIF log, when vuln ran and the scan completed.
     value: ${{ steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file }}
@@ -118,10 +121,12 @@ runs:
         INPUT_LOCK_FILE: ${{ inputs.lock-file }}
         GH_TOKEN: ${{ inputs.token }}
 
+    # The default pwsh shell (-command ". '{0}'") reports every failure as
+    # exit code 1. With -File, the step keeps raeva's exit code.
     - id: windows
       if: runner.os == 'Windows'
-      shell: pwsh
-      run: '& "$env:GITHUB_ACTION_PATH/scripts/install.ps1"'
+      shell: pwsh -NoLogo -NoProfile -NonInteractive -File {0}
+      run: '& "$env:GITHUB_ACTION_PATH/scripts/install.ps1"; exit $LASTEXITCODE'
       env:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_VERIFY: ${{ inputs.verify }}
@@ -173,8 +178,8 @@ runs:
 
     - id: scan-windows
       if: runner.os == 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true')
-      shell: pwsh
-      run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" scan'
+      shell: pwsh -NoLogo -NoProfile -NonInteractive -File {0}
+      run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" scan; exit $LASTEXITCODE'
       env:
         RAEVA_BIN: ${{ steps.windows.outputs.raeva }}
         LOCK_FILE: ${{ steps.windows.outputs.lock-file }}
@@ -201,8 +206,8 @@ runs:
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
 
     - if: inputs.vuln == 'true' && runner.os == 'Windows'
-      shell: pwsh
-      run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" gate'
+      shell: pwsh -NoLogo -NoProfile -NonInteractive -File {0}
+      run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" gate; exit $LASTEXITCODE'
       env:
         VULN_EXIT_CODE: ${{ steps.scan-windows.outputs.vuln-exit-code }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}

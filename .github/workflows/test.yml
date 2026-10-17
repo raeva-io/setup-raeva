@@ -82,8 +82,10 @@ jobs:
         shell: bash
         env:
           OUTCOME: ${{ steps.stale.outcome }}
+          FROZEN_EXIT_CODE: ${{ steps.stale.outputs.frozen-exit-code }}
         run: |
           test "$OUTCOME" = failure
+          test "$FROZEN_EXIT_CODE" = 7
           set +e
           raeva -C test/fixture sync --frozen
           code=$?

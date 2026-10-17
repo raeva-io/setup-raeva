@@ -81,7 +81,8 @@ shell installer skips the check when `sha256sum` is missing.
 ## Outputs
 
 `version`, `bin-dir`, `raeva` (full path of the binary), `lock-file`,
-`relocked-platforms`, `cache-hit`, `sarif-file`, and `vuln-findings`.
+`relocked-platforms`, `cache-hit`, `frozen-exit-code`, `sarif-file`, and
+`vuln-findings`.
 
 ## Runners
 

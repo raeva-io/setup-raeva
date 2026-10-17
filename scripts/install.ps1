@@ -157,7 +157,10 @@ Out 'bin-dir' $binDir
 Out 'raeva' $raeva
 
 # Cache inputs. The store paths follow docs/configuration.md "File locations".
+# Before 0.5.0, raeva kept the store on Windows in the roaming %APPDATA%.
+$beforeLocalAppData = [version]($version -replace '-.*$', '') -lt [version]'0.5.0'
 $dataDir = if ($env:RAEVA_HOME) { $env:RAEVA_HOME }
+    elseif ($target -like '*windows*' -and $beforeLocalAppData) { Join-Path $env:APPDATA 'raeva' }
     elseif ($target -like '*windows*') { Join-Path $env:LOCALAPPDATA 'raeva' }
     elseif ($target -like '*apple-darwin') { Join-Path $HOME 'Library/Application Support/raeva' }
     elseif ($env:XDG_DATA_HOME) { Join-Path $env:XDG_DATA_HOME 'raeva' }

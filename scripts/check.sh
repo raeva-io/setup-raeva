@@ -10,7 +10,6 @@ set -euo pipefail
 mode="${1:-scan}"
 raeva="${RAEVA_BIN:-raeva}"
 workdir="${INPUT_WORKING_DIRECTORY:-.}"
-lock_file="${LOCK_FILE:-raeva.lock}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
 
@@ -33,16 +32,16 @@ json_field() {
 hint_for() {
   case "$1" in
     LOCKFILE_MISMATCH)
-      echo "Run 'raeva sync' with the same --platforms as the lock, and commit $lock_file." ;;
+      echo "Run 'raeva sync' and commit raeva.lock." ;;
     PLATFORM_MISSING)
-      echo "Lock this runner's platform too: raeva sync --platforms <every platform CI uses>." ;;
+      echo "Lock this runner's platform too: raeva sync --platforms <platform>, then commit raeva.lock." ;;
     LOCKFILE_MISSING)
-      echo "Run 'raeva sync' at the project root and commit $lock_file." ;;
+      echo "Run 'raeva sync' at the project root and commit raeva.lock." ;;
     LOCKFILE_INVALID)
-      echo "Run 'raeva sync' to write $lock_file again, then commit it." ;;
+      echo "Run 'raeva sync' to write raeva.lock again, then commit it." ;;
     AUTH)
-      echo "Give the job the repository credentials (settings.xml or raeva.toml [[auth]] with token_env)." ;;
-    *) echo "See the exit-code table in the raeva README." ;;
+      echo "Give the job the repository credentials: a settings.xml <server> that reads them with \${env.NAME}." ;;
+    *) echo "See the error codes in docs/json-output.md of raeva." ;;
   esac
 }
 
@@ -55,17 +54,15 @@ frozen() {
   if [[ $code -eq 0 ]]; then
     local resolved=""
     command -v jq >/dev/null && resolved=$(jq -r '.data.resolved // empty' "$json")
-    echo "$lock_file is current${resolved:+ ($resolved dependencies)}"
-    printf '### raeva\n\n`%s` is current for this runner.\n' "$lock_file" >> "$summary"
+    echo "raeva.lock is current${resolved:+ ($resolved dependencies)}"
+    printf '### raeva\n\n`raeva.lock` is current for this runner.\n' >> "$summary"
     return 0
   fi
   local err ecode
   ecode=$(json_field code "$json")
-  # raeva 0.4 writes no code field. A frozen sync exits 7 only for a stale lock.
-  [[ -n "$ecode" || $code -ne 7 ]] || ecode=LOCKFILE_MISMATCH
   err=$(json_field error "$json")
   [[ -n "$err" ]] || err=$(cat "$json")
-  local lock_path="$workdir/$lock_file"
+  local lock_path="$workdir/raeva.lock"
   lock_path="${lock_path#./}"
   annotate error "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" \
     "$err. $(hint_for "$ecode")"
@@ -89,7 +86,7 @@ vuln() {
     rm -f "$sarif"
     return 0
   fi
-  # rv writes result locations relative to the project root. Code scanning
+  # raeva writes result locations relative to the project root. Code scanning
   # reads them relative to the repository root, so prefix the subdirectory.
   if [[ "$workdir" != "." ]] && command -v jq >/dev/null; then
     local prefix="${workdir%/}/" fixed="$sarif.tmp"
@@ -120,11 +117,10 @@ gate() {
   esac
 }
 
-# Re-locks every platform the lock records, so a bot update does not drop
-# the platforms of other runners (a plain sync after a POM change keeps only
-# its own platform and warns PLATFORM_DROPPED).
+# Re-locks exactly the platforms the lock records. A plain sync would also
+# add the platform of the runner.
 relock() {
-  local platforms="${INPUT_PLATFORMS:-}" lock="$workdir/$lock_file"
+  local platforms="${INPUT_PLATFORMS:-}" lock="$workdir/raeva.lock"
   if [[ -z "$platforms" && -f "$lock" ]]; then
     if command -v jq >/dev/null; then
       platforms=$("$raeva" --json -C "$workdir" lock info | jq -r '[.data.platforms[].platform] | join(",")')

@@ -14,7 +14,6 @@ repo="${INPUT_REPOSITORY:-raeva-io/raeva}"
 base_url="${INPUT_DOWNLOAD_BASE_URL:-}"
 rv_alias="${INPUT_RV_ALIAS:-false}"
 workdir="${INPUT_WORKING_DIRECTORY:-.}"
-lock_input="${INPUT_LOCK_FILE:-}"
 action_path="${GITHUB_ACTION_PATH:-$(cd "$(dirname "$0")/.." && pwd)}"
 tmp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 
@@ -53,33 +52,22 @@ fi
 
 base_url="${base_url:-https://github.com/$repo/releases/download/$tag}"
 base_url="${base_url%/}"
+asset="raeva-$target.tar.gz"
 work=$(mktemp -d "$tmp_root/raeva-setup.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 curl_get "$base_url/sha256.sum" "$work/sha256.sum" || die "cannot download sha256.sum for $tag from $base_url"
 
-# sha256.sum lines look like "<hex> *<asset>". The asset name is matched by
-# target, so a renamed package (rv-cli- or raeva-) needs no change here.
-line=$(grep -E "^[0-9a-f]{64} \*?[A-Za-z0-9._-]+-${target}\.(tar\.gz|tar\.xz|zip)\$" "$work/sha256.sum" || true)
-[[ -n "$line" ]] || die "release $tag has no archive for $target"
-[[ $(printf '%s\n' "$line" | wc -l) -eq 1 ]] || die "release $tag lists more than one archive for $target"
-release_sha="${line%% *}"
-asset="${line#* }"; asset="${asset#\*}"
+# sha256.sum lines look like "<hex> *<asset>".
+release_sha=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$work/sha256.sum")
+[[ "$release_sha" =~ ^[0-9a-f]{64}$ ]] || die "sha256.sum of $tag has no single entry for $asset"
 
 # A checksum shipped with this action release is independent of the GitHub
-# release, so it also catches a release asset that was replaced later. The pin
-# is looked up by target, not by asset name, so an archive uploaded under
-# another name does not escape it.
-known=$(awk -v v="$version" -v t="$target" \
-  '$1 == v && $2 ~ ("-" t "\\.(tar\\.gz|tar\\.xz|zip)$") { print $2, $3 }' \
+# release, so it also catches a release asset that was replaced later.
+known_sha=$(awk -v v="$version" -v a="$asset" '$1 == v && $2 == a { print $3 }' \
   "$action_path/known-checksums.txt" 2>/dev/null || true)
-known_sha=""
-if [[ -n "$known" ]]; then
-  known_asset="${known%% *}"
-  known_sha="${known##* }"
-  if [[ "$known_asset" != "$asset" || "$known_sha" != "$release_sha" ]]; then
-    die "sha256.sum of $tag lists $asset $release_sha, but this action pins $known_asset $known_sha"
-  fi
+if [[ -n "$known_sha" && "$known_sha" != "$release_sha" ]]; then
+  die "sha256.sum of $tag lists $asset $release_sha, but this action pins $known_sha"
 fi
 
 curl_get "$base_url/$asset" "$work/$asset" || die "cannot download $asset"
@@ -111,16 +99,9 @@ elif [[ -z "$known_sha" ]]; then
 fi
 
 mkdir -p "$work/x"
-case "$asset" in
-  *.tar.gz) tar -xzf "$work/$asset" -C "$work/x" ;;
-  *.tar.xz) tar -xJf "$work/$asset" -C "$work/x" ;;
-  *.zip)    unzip -q "$work/$asset" -d "$work/x" ;;
-esac
-
-# Archives from before the rename hold only `rv`; later ones hold `raeva`.
-binary=$(find "$work/x" -type f -name raeva | head -n 1)
-[[ -n "$binary" ]] || binary=$(find "$work/x" -type f -name rv | head -n 1)
-[[ -n "$binary" ]] || die "$asset contains neither raeva nor rv"
+tar -xzf "$work/$asset" -C "$work/x"
+binary="$work/x/raeva-$target/raeva"
+[[ -f "$binary" ]] || die "$asset has no raeva-$target/raeva"
 
 bin_dir="$tmp_root/raeva-$version-$target/bin"
 rm -rf "$bin_dir"
@@ -149,18 +130,11 @@ else
   data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/raeva"
 fi
 
-lock_file="$lock_input"
-if [[ -z "$lock_file" ]]; then
-  lock_file=raeva.lock
-  [[ -f "$workdir/raeva.lock" || ! -f "$workdir/rv.lock" ]] || lock_file=rv.lock
-fi
-out lock-file "$lock_file"
-
-if [[ -f "$workdir/$lock_file" ]]; then
+if [[ -f "$workdir/raeva.lock" ]]; then
   if command -v sha256sum >/dev/null; then
-    lock_hash=$(sha256sum "$workdir/$lock_file" | cut -c1-64)
+    lock_hash=$(sha256sum "$workdir/raeva.lock" | cut -c1-64)
   else
-    lock_hash=$(shasum -a 256 "$workdir/$lock_file" | cut -c1-64)
+    lock_hash=$(shasum -a 256 "$workdir/raeva.lock" | cut -c1-64)
   fi
   prefix="raeva-store-v1-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-"
   out cache-key "$prefix$lock_hash"
@@ -173,5 +147,5 @@ if [[ -f "$workdir/$lock_file" ]]; then
     echo "RAEVA_EOF"
   } >> "${GITHUB_OUTPUT:-/dev/null}"
 else
-  echo "No $lock_file in $workdir; the store cache is skipped"
+  echo "No raeva.lock in $workdir; the store cache is skipped"
 fi

@@ -9,9 +9,7 @@ permissions:
   contents: read
 
 env:
-  # The newest raeva release. 0.4 ships rv and rv.lock in rv-cli-<target>
-  # archives; the action installs it as raeva and detects rv.lock.
-  RAEVA_VERSION: 0.4.1
+  RAEVA_VERSION: 0.5.0
 
 jobs:
   action:
@@ -58,11 +56,11 @@ jobs:
           vuln-fail-on: never
           sarif-upload: false
 
-      - name: The second install found the lock
+      - name: The frozen check passed
         shell: bash
         env:
-          LOCK: ${{ steps.check.outputs.lock-file }}
-        run: test "$LOCK" = rv.lock
+          FROZEN_EXIT_CODE: ${{ steps.check.outputs.frozen-exit-code }}
+        run: test "$FROZEN_EXIT_CODE" = 0
 
       - name: Bump the fixture POM
         shell: bash

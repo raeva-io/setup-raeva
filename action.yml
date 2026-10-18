@@ -22,16 +22,11 @@ inputs:
     description: Token that gh uses to fetch attestations. It needs no write scope.
     default: ${{ github.token }}
   cache:
-    description: Restore and save the raeva artifact store and metadata cache, keyed by the lock file.
+    description: Restore and save the raeva artifact store and metadata cache, keyed by raeva.lock.
     default: "true"
   working-directory:
-    description: The directory that holds the root pom.xml and the lock file, relative to the workspace.
+    description: The directory that holds the root pom.xml and raeva.lock, relative to the workspace.
     default: "."
-  lock-file:
-    description: >-
-      The lock file name. Empty means raeva.lock, or rv.lock when only that
-      exists.
-    default: ""
   check:
     description: Run `raeva sync --frozen` after the install.
     default: "false"
@@ -85,9 +80,6 @@ outputs:
   raeva:
     description: The full path of the raeva binary.
     value: ${{ steps.unix.outputs.raeva || steps.windows.outputs.raeva }}
-  lock-file:
-    description: The lock file name the action used.
-    value: ${{ steps.unix.outputs.lock-file || steps.windows.outputs.lock-file }}
   relocked-platforms:
     description: The platforms that relock passed to raeva sync.
     value: ${{ steps.relock.outputs.relocked-platforms }}
@@ -118,7 +110,6 @@ runs:
         INPUT_DOWNLOAD_BASE_URL: ${{ inputs.download-base-url }}
         INPUT_RV_ALIAS: ${{ inputs.rv-alias }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        INPUT_LOCK_FILE: ${{ inputs.lock-file }}
         GH_TOKEN: ${{ inputs.token }}
 
     # The default pwsh shell (-command ". '{0}'") reports every failure as
@@ -134,7 +125,6 @@ runs:
         INPUT_DOWNLOAD_BASE_URL: ${{ inputs.download-base-url }}
         INPUT_RV_ALIAS: ${{ inputs.rv-alias }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        INPUT_LOCK_FILE: ${{ inputs.lock-file }}
         GH_TOKEN: ${{ inputs.token }}
 
     # The cache is saved at the end of the job. A pull request can read the
@@ -159,7 +149,6 @@ runs:
         "$GITHUB_ACTION_PATH/scripts/check.sh" relock
       env:
         RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
-        LOCK_FILE: ${{ steps.unix.outputs.lock-file }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
 
@@ -169,7 +158,6 @@ runs:
       run: '"$GITHUB_ACTION_PATH/scripts/check.sh" scan'
       env:
         RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
-        LOCK_FILE: ${{ steps.unix.outputs.lock-file }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_CHECK: ${{ inputs.check }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
@@ -182,7 +170,6 @@ runs:
       run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" scan; exit $LASTEXITCODE'
       env:
         RAEVA_BIN: ${{ steps.windows.outputs.raeva }}
-        LOCK_FILE: ${{ steps.windows.outputs.lock-file }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_CHECK: ${{ inputs.check }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}

@@ -25,14 +25,15 @@ Releases of this action are immutable, so `@v1.0.0` always names the same
 commit; `@<commit SHA> # v1.0.0` pins it by SHA. Dependabot and Renovate update
 either form.
 
-Set `version` to an exact raeva release, the one your developers use. A lock
-written by a newer raeva can use a schema that an older one refuses.
+Set `version` to an exact raeva release, 0.5.0 or newer, the one your
+developers use. A lock written by a newer raeva can use a schema that an older
+one refuses.
 
 ## What the action does
 
-1. Downloads `sha256.sum` and the archive for the runner from the GitHub
-   release `v<version>`. It picks the archive by target triple, such as
-   `x86_64-unknown-linux-gnu`.
+1. Downloads `sha256.sum` and the archive for the runner, such as
+   `raeva-x86_64-unknown-linux-gnu.tar.gz`, from the GitHub release
+   `v<version>`.
 2. Checks the archive's SHA-256. For the versions in `known-checksums.txt`, the
    SHA-256 must also match the value pinned in this action, so a release asset
    replaced after the action release is refused.
@@ -65,8 +66,7 @@ shell installer skips the check when `sha256sum` is missing.
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
 | `token` | `github.token` | Read token for `gh attestation verify`. |
 | `cache` | `true` | Cache the artifact store and metadata cache. |
-| `working-directory` | `.` | The directory with the root `pom.xml` and the lock file. |
-| `lock-file` | empty | The lock file name. Empty means `raeva.lock`, or `rv.lock` when only that exists. |
+| `working-directory` | `.` | The directory with the root `pom.xml` and `raeva.lock`. |
 | `check` | `false` | Run `raeva sync --frozen`. |
 | `platforms` | empty | Platforms for `check` and `relock`, such as `linux-x86_64,macos-aarch64`. Empty means the runner's platform for `check` and every recorded platform for `relock`. |
 | `relock` | `false` | Run `raeva sync` for every recorded platform. Linux and macOS only. |
@@ -80,7 +80,7 @@ shell installer skips the check when `sha256sum` is missing.
 
 ## Outputs
 
-`version`, `bin-dir`, `raeva` (full path of the binary), `lock-file`,
+`version`, `bin-dir`, `raeva` (full path of the binary),
 `relocked-platforms`, `cache-hit`, `frozen-exit-code`, `sarif-file`, and
 `vuln-findings`.
 
@@ -101,9 +101,8 @@ image has. On a self-hosted runner without `gh`, set `verify: sha256`.
 
 The cache holds `store` and `metadata.db` from the raeva data directory:
 `~/.local/share/raeva` on Linux, `~/Library/Application Support/raeva` on
-macOS, `%LOCALAPPDATA%\raeva` on Windows (`%APPDATA%\raeva` before raeva
-0.5.0), or `$RAEVA_HOME` when it is set. It does not hold `config.toml` or
-credentials.
+macOS, `%LOCALAPPDATA%\raeva` on Windows, or `$RAEVA_HOME` when it is set. It
+does not hold `config.toml` or credentials.
 
 A pull request restores the cache of its base branch but saves only to its own
 scope. raeva re-hashes a stored file against its pin before `export-m2` copies
@@ -127,29 +126,13 @@ with other bytes. A scheduled job with `cache: false` does.
 - `known-checksums.txt` changes only in a reviewed pull request, after the
   release's attestations were verified.
 
-## raeva 0.4
-
-The action also installs raeva 0.4, which ships `rv` in `rv-cli-<target>`
-archives and writes `rv.lock`. It installs the binary as `raeva`, finds
-`rv.lock`, and caches `%APPDATA%\raeva` on Windows. raeva 0.4 writes no error
-code in its JSON output, so the annotation infers `LOCKFILE_MISMATCH` from
-exit code 7 and shows raeva's message for other failures.
-
-raeva 0.4 hashes POM files as they are checked out. On Windows runners git
-converts line endings (`core.autocrlf`), so a lock written on Linux or macOS
-fails `--frozen` there with "module POM changed". raeva 0.5 hashes POMs with
-LF line endings. With 0.4, add this `.gitattributes`:
-
-```
-* text=auto eol=lf
-```
-
 ## Development
 
 `.github/workflows/test.yml` runs the action on Linux, macOS, and Windows
-runners against the newest raeva release: install with attestation and with
-SHA-256 only, the frozen check on a current and on a stale lock, and the vuln
-scan. Its `scripts` job runs the scripts outside the composite action:
+runners against the raeva release in `RAEVA_VERSION`: install with
+attestation and with SHA-256 only, the frozen check on a current and on a
+stale lock, and the vuln scan. Its `scripts` job runs the scripts outside the
+composite action:
 
 - `test/local.sh` runs the install and check scripts, with bash and with pwsh,
   against a fake release built from a raeva binary and against the real

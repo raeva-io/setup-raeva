@@ -2,16 +2,16 @@
 # ok and bad always return 0, so "A && ok || bad" is safe here.
 # shellcheck disable=SC2015
 # Runs the action's scripts outside GitHub Actions, on Linux x86_64, against
-# a raeva binary and two Maven projects. The Test workflow runs it with the
-# v0.4.1 release; it also runs with a local build.
+# a raeva binary and two Maven projects. The Test workflow runs it with a
+# release binary; it also runs with a local build.
 #
-#   RAEVA_BUILD=/path/to/rv   the raeva binary to package as a fake release
-#   PROJECT=/path             a project with a gson dependency and an rv.lock
-#                             for linux-x86_64, macos-aarch64, windows-x86_64
-#   VULN_PROJECT=/path        a project with rv.lock and known vulnerabilities
-#   PWSH=/path/to/pwsh        optional; also runs the .ps1 scripts
-#   GH_TOKEN                  optional; enables the real-release tests
-#   RELEASE_VERSION           a published release for those tests (0.4.1)
+#   RAEVA_BUILD=/path/to/raeva  the raeva binary to package as a fake release
+#   PROJECT=/path               a project with a gson dependency and a raeva.lock
+#                               for linux-x86_64, macos-aarch64, windows-x86_64
+#   VULN_PROJECT=/path          a project with raeva.lock and known vulnerabilities
+#   PWSH=/path/to/pwsh          optional; also runs the .ps1 scripts
+#   GH_TOKEN                    optional; enables the real-release tests
+#   RELEASE_VERSION             a published release for those tests
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -30,9 +30,7 @@ has() { grep -q -- "$2" "$1"; }
 export HOME="$scratch/home" RAEVA_HOME="$scratch/raeva-home"
 mkdir -p "$HOME"
 
-# A fake release in the cargo-dist layout after the rename (raeva-<target>
-# with raeva inside), served over file://. The real-release tests cover the
-# rv-cli-<target> layout of 0.4.
+# A fake release in the cargo-dist layout, served over file://.
 version=$("$RAEVA_BUILD" --version | awk '{print $NF}')
 target=x86_64-unknown-linux-gnu
 rel="$scratch/release"
@@ -78,7 +76,6 @@ for i in "${!install_variants[@]}"; do
   raeva=$(output_of "$tag-install" raeva)
   [[ -x "$raeva" && "$(basename "$raeva")" == raeva ]] && ok "$tag: binary installed as raeva" || bad "$tag: binary installed as raeva"
   [[ ! -e "$(dirname "$raeva")/rv" ]] && ok "$tag: no rv alias by default" || bad "$tag: no rv alias by default"
-  [[ "$(output_of "$tag-install" lock-file)" == rv.lock ]] && ok "$tag: rv.lock detected" || bad "$tag: rv.lock detected"
   [[ "$(output_of "$tag-install" cache-key)" == raeva-store-v1-Linux-X64-* ]] && ok "$tag: cache key" || bad "$tag: cache key"
   has "$scratch/run-$tag-install/output" "$RAEVA_HOME/store" && ok "$tag: cache path follows RAEVA_HOME" || bad "$tag: cache path follows RAEVA_HOME"
   has "$scratch/run-$tag-install/path" "/bin" && ok "$tag: PATH entry" || bad "$tag: PATH entry"
@@ -111,14 +108,31 @@ for i in "${!install_variants[@]}"; do
   expect "$tag: refuses a tampered archive" 1 $?
   has "$scratch/run-$tag-tampered/log" "sha256.sum says" && ok "$tag: names the checksum mismatch" || bad "$tag: names the checksum mismatch"
 
-  # A version the action pins, served under another archive name.
-  if grep -q "^$version " "$here/known-checksums.txt"; then
-    # shellcheck disable=SC2086
-    ACTION_PATH="$here" run_env "$tag-renamed" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 \
-      INPUT_DOWNLOAD_BASE_URL="file://$rel" $inst
-    expect "$tag: refuses a pinned version under another archive name" 1 $?
-    has "$scratch/run-$tag-renamed/log" "this action pins" && ok "$tag: names the pinned archive" || bad "$tag: names the pinned archive"
-  fi
+  # A release with only the archive names of raeva 0.4.
+  mkdir -p "$scratch/rel-old-$tag"
+  cp "$rel/raeva-$target.tar.gz" "$scratch/rel-old-$tag/rv-cli-$target.tar.gz"
+  sed "s/raeva-$target/rv-cli-$target/" "$rel/sha256.sum" > "$scratch/rel-old-$tag/sha256.sum"
+  # shellcheck disable=SC2086
+  run_env "$tag-old" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 INPUT_DOWNLOAD_BASE_URL="file://$scratch/rel-old-$tag" $inst
+  expect "$tag: refuses a release without raeva-<target> archives" 1 $?
+  has "$scratch/run-$tag-old/log" "no single entry for raeva-$target.tar.gz" && ok "$tag: names the missing archive" || bad "$tag: names the missing archive"
+
+  # A version this action pins, with the release's checksum and with another.
+  sha=$(awk -v a="*raeva-$target.tar.gz" '$2 == a { print $1 }' "$rel/sha256.sum")
+  pinned="$scratch/action-pinned-$tag"
+  cp -r "$unpinned" "$pinned"
+  echo "$version raeva-$target.tar.gz $sha" >> "$pinned/known-checksums.txt"
+  # shellcheck disable=SC2086
+  ACTION_PATH="$pinned" run_env "$tag-pinned" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 \
+    INPUT_DOWNLOAD_BASE_URL="file://$rel" $inst
+  expect "$tag: installs a release that matches the pinned checksum" 0 $?
+  has "$scratch/run-$tag-pinned/log" "pinned in this action" && ok "$tag: uses the pinned checksum" || bad "$tag: uses the pinned checksum"
+  sed -i "s/ $sha\$/ $(printf '0%.0s' {1..64})/" "$pinned/known-checksums.txt"
+  # shellcheck disable=SC2086
+  ACTION_PATH="$pinned" run_env "$tag-pin-mismatch" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 \
+    INPUT_DOWNLOAD_BASE_URL="file://$rel" $inst
+  expect "$tag: refuses a release that disagrees with the pinned checksum" 1 $?
+  has "$scratch/run-$tag-pin-mismatch/log" "but this action pins" && ok "$tag: names the pinned checksum" || bad "$tag: names the pinned checksum"
 
   # The fake release has no attestation, so attestation mode must refuse it.
   if [[ -n "${GH_TOKEN:-}" ]]; then
@@ -129,24 +143,23 @@ for i in "${!install_variants[@]}"; do
 
   # Frozen check, current lock.
   # shellcheck disable=SC2086
-  run_env "$tag-frozen-ok" env RAEVA_BIN="$raeva" LOCK_FILE=rv.lock INPUT_CHECK=true \
+  run_env "$tag-frozen-ok" env RAEVA_BIN="$raeva" INPUT_CHECK=true \
     INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
   expect "$tag: frozen check passes on a current lock" 0 $?
   [[ "$(output_of "$tag-frozen-ok" frozen-exit-code)" == 0 ]] && ok "$tag: frozen-exit-code 0" || bad "$tag: frozen-exit-code 0"
 
   # Frozen check, three locked platforms.
   # shellcheck disable=SC2086
-  run_env "$tag-frozen-plat" env RAEVA_BIN="$raeva" LOCK_FILE=rv.lock INPUT_CHECK=true \
+  run_env "$tag-frozen-plat" env RAEVA_BIN="$raeva" INPUT_CHECK=true \
     INPUT_PLATFORMS=linux-x86_64,macos-aarch64,windows-x86_64 INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
   expect "$tag: frozen check of every locked platform" 0 $?
 
   # Frozen check, a platform the lock lacks.
   # shellcheck disable=SC2086
-  run_env "$tag-frozen-missing" env RAEVA_BIN="$raeva" LOCK_FILE=rv.lock INPUT_CHECK=true \
+  run_env "$tag-frozen-missing" env RAEVA_BIN="$raeva" INPUT_CHECK=true \
     INPUT_PLATFORMS=macos-x86_64 INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
   expect "$tag: frozen check fails on a missing platform" 3 $?
-  # raeva 0.4 has no error code in the envelope; its message names the platform.
-  grep -Eq "PLATFORM_MISSING|'macos-x86_64' not in lockfile" "$scratch/run-$tag-frozen-missing/log" && ok "$tag: annotation names the missing platform" || bad "$tag: annotation names the missing platform"
+  grep -q "PLATFORM_MISSING" "$scratch/run-$tag-frozen-missing/log" && ok "$tag: annotation names the missing platform" || bad "$tag: annotation names the missing platform"
 
   # Frozen check after a bot-style POM bump.
   proj="$scratch/project-bumped-$tag"
@@ -156,7 +169,7 @@ for i in "${!install_variants[@]}"; do
   sed -i '/<artifactId>gson<\/artifactId>/{n;s|<version>[^<]*</version>|<version>2.13.1</version>|}' "$proj/pom.xml"
   cmp -s "$PROJECT/pom.xml" "$proj/pom.xml" && bad "$tag: test setup changed the POM"
   # shellcheck disable=SC2086
-  run_env "$tag-frozen-stale" env RAEVA_BIN="$raeva" LOCK_FILE=rv.lock INPUT_CHECK=true \
+  run_env "$tag-frozen-stale" env RAEVA_BIN="$raeva" INPUT_CHECK=true \
     INPUT_WORKING_DIRECTORY="$proj" $chk scan
   expect "$tag: frozen check fails with 7 after a POM bump" 7 $?
   if grep -q '^::error file=.*title=raeva sync --frozen (exit 7%2C LOCKFILE_MISMATCH)::' "$scratch/run-$tag-frozen-stale/log"; then
@@ -168,7 +181,7 @@ for i in "${!install_variants[@]}"; do
 
   # Vulnerability scan with findings, gated at high.
   # shellcheck disable=SC2086
-  run_env "$tag-vuln" env RAEVA_BIN="$raeva" LOCK_FILE=rv.lock INPUT_VULN=true INPUT_VULN_FAIL_ON=high \
+  run_env "$tag-vuln" env RAEVA_BIN="$raeva" INPUT_VULN=true INPUT_VULN_FAIL_ON=high \
     INPUT_WORKING_DIRECTORY="$VULN_PROJECT" $chk scan
   expect "$tag: vuln scan step does not fail on findings" 0 $?
   vcode=$(output_of "$tag-vuln" vuln-exit-code)
@@ -203,15 +216,6 @@ if [[ -n "${GH_TOKEN:-}" && -n "${RELEASE_VERSION:-}" ]]; then
     expect "$tag: real release $RELEASE_VERSION with attestation" 0 $?
     has "$scratch/run-$tag-real/log" "pinned in this action" && ok "$tag: pinned checksum used" || bad "$tag: pinned checksum used"
     has "$scratch/run-$tag-real/log" "Build attestation of" && ok "$tag: attestation verified" || bad "$tag: attestation verified"
-
-    # A pinned checksum that disagrees with the release.
-    alt="$scratch/action-alt-$tag"
-    cp -r "$here" "$alt"
-    sed -i "s/^\($RELEASE_VERSION rv-cli-$target.tar.gz\) [0-9a-f]*/\1 $(printf '0%.0s' {1..64})/" "$alt/known-checksums.txt"
-    # shellcheck disable=SC2086
-    run_env "$tag-real-pinmismatch" env GITHUB_ACTION_PATH="$alt" INPUT_VERSION="$RELEASE_VERSION" INPUT_VERIFY=sha256 \
-      ${inst/$here/$alt}
-    expect "$tag: refuses a release that disagrees with the pinned checksum" 1 $?
   done
 fi
 

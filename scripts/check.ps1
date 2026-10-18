@@ -7,7 +7,6 @@ Set-StrictMode -Version 3.0
 
 $raeva = if ($env:RAEVA_BIN) { $env:RAEVA_BIN } else { 'raeva' }
 $workdir = if ($env:INPUT_WORKING_DIRECTORY) { $env:INPUT_WORKING_DIRECTORY } else { '.' }
-$lockFile = if ($env:LOCK_FILE) { $env:LOCK_FILE } else { 'raeva.lock' }
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 
 function Out([string]$Name, [string]$Value) {
@@ -33,12 +32,12 @@ function Invoke-Raeva([string[]]$Arguments, [string]$StdOut, [string]$StdErr) {
 
 function Hint([string]$Code) {
     switch ($Code) {
-        'LOCKFILE_MISMATCH' { "Run 'raeva sync' with the same --platforms as the lock, and commit $lockFile." }
-        'PLATFORM_MISSING'  { "Lock this runner's platform too: raeva sync --platforms <every platform CI uses>." }
-        'LOCKFILE_MISSING'  { "Run 'raeva sync' at the project root and commit $lockFile." }
-        'LOCKFILE_INVALID'  { "Run 'raeva sync' to write $lockFile again, then commit it." }
-        'AUTH'              { 'Give the job the repository credentials (settings.xml or raeva.toml [[auth]] with token_env).' }
-        default             { 'See the exit-code table in the raeva README.' }
+        'LOCKFILE_MISMATCH' { "Run 'raeva sync' and commit raeva.lock." }
+        'PLATFORM_MISSING'  { "Lock this runner's platform too: raeva sync --platforms <platform>, then commit raeva.lock." }
+        'LOCKFILE_MISSING'  { "Run 'raeva sync' at the project root and commit raeva.lock." }
+        'LOCKFILE_INVALID'  { "Run 'raeva sync' to write raeva.lock again, then commit it." }
+        'AUTH'              { 'Give the job the repository credentials: a settings.xml <server> that reads them with ${env.NAME}.' }
+        default             { 'See the error codes in docs/json-output.md of raeva.' }
     }
 }
 
@@ -54,16 +53,14 @@ function Invoke-Frozen {
     try { $envelope = Get-Content -LiteralPath $json -Raw | ConvertFrom-Json } catch { }
     if ($code -eq 0) {
         $resolved = if ($envelope -and $envelope.data.PSObject.Properties['resolved']) { " ($($envelope.data.resolved) dependencies)" } else { '' }
-        Write-Output "$lockFile is current$resolved"
-        Summary "### raeva`n`n``$lockFile`` is current for this runner."
+        Write-Output "raeva.lock is current$resolved"
+        Summary "### raeva`n`n``raeva.lock`` is current for this runner."
         return
     }
     $ecode = if ($envelope -and $envelope.PSObject.Properties['code']) { "$($envelope.code)" } else { '' }
-    # raeva 0.4 writes no code field. A frozen sync exits 7 only for a stale lock.
-    if (-not $ecode -and $code -eq 7) { $ecode = 'LOCKFILE_MISMATCH' }
     $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { Get-Content -LiteralPath $json -Raw }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
-    $lockPath = "$workdir/$lockFile"
+    $lockPath = "$workdir/raeva.lock"
     if ($lockPath.StartsWith('./')) { $lockPath = $lockPath.Substring(2) }
     Write-Output "::error file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message. $(Hint $ecode)")"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' })).`n`n$(Hint $ecode)"
@@ -87,7 +84,7 @@ function Invoke-Vuln {
         return
     }
     $log = Get-Content -LiteralPath $sarif -Raw | ConvertFrom-Json
-    # rv writes result locations relative to the project root. Code scanning
+    # raeva writes result locations relative to the project root. Code scanning
     # reads them relative to the repository root, so prefix the subdirectory.
     $prefix = ($workdir -replace '\\', '/').TrimEnd('/')
     if ($prefix.StartsWith('./')) { $prefix = $prefix.Substring(2) }

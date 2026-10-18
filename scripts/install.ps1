@@ -61,7 +61,9 @@ $target = switch ("$os/$arch") {
 if ("$os/$arch" -eq 'Windows/ARM64') {
     Write-Output "::notice title=setup-raeva::using the x86_64 build under emulation on Windows ARM64"
 }
-$exe = if ($target -like '*windows*') { '.exe' } else { '' }
+$windows = $target -like '*windows*'
+$exe = if ($windows) { '.exe' } else { '' }
+$asset = if ($windows) { "raeva-$target.zip" } else { "raeva-$target.tar.gz" }
 
 if (-not $baseUrl) { $baseUrl = "https://github.com/$repo/releases/download/$tag" }
 $baseUrl = $baseUrl.TrimEnd('/')
@@ -71,29 +73,26 @@ try {
     $sumFile = Join-Path $work 'sha256.sum'
     try { Get-File "$baseUrl/sha256.sum" $sumFile } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
 
-    $pattern = '^([0-9a-f]{64}) \*?([A-Za-z0-9._-]+-' + [Regex]::Escape($target) + '\.(tar\.gz|tar\.xz|zip))$'
-    $matches_ = @(Get-Content -LiteralPath $sumFile | ForEach-Object { if ($_ -match $pattern) { , @($Matches[1], $Matches[2]) } })
-    if ($matches_.Count -eq 0) { Fail "release $tag has no archive for $target" }
-    if ($matches_.Count -gt 1) { Fail "release $tag lists more than one archive for $target" }
-    $releaseSha = $matches_[0][0]
-    $asset = $matches_[0][1]
+    # sha256.sum lines look like "<hex> *<asset>".
+    $shas = @(Get-Content -LiteralPath $sumFile | ForEach-Object {
+        $f = -split $_
+        if ($f.Count -eq 2 -and $f[1].TrimStart('*') -eq $asset) { $f[0] }
+    })
+    if ($shas.Count -ne 1 -or $shas[0] -cnotmatch '^[0-9a-f]{64}$') { Fail "sha256.sum of $tag has no single entry for $asset" }
+    $releaseSha = $shas[0]
 
     # A checksum shipped with this action release is independent of the
-    # GitHub release, so it also catches a release asset replaced later. The
-    # pin is looked up by target, not by asset name, so an archive uploaded
-    # under another name does not escape it.
+    # GitHub release, so it also catches a release asset replaced later.
     $knownSha = ''
-    $knownAsset = ''
     $knownFile = Join-Path $actionPath 'known-checksums.txt'
-    $knownPattern = '-' + [Regex]::Escape($target) + '\.(tar\.gz|tar\.xz|zip)$'
     if (Test-Path -LiteralPath $knownFile) {
         foreach ($line in Get-Content -LiteralPath $knownFile) {
             $f = -split $line
-            if ($f.Count -eq 3 -and $f[0] -eq $version -and $f[1] -match $knownPattern) { $knownAsset = $f[1]; $knownSha = $f[2] }
+            if ($f.Count -eq 3 -and $f[0] -eq $version -and $f[1] -eq $asset) { $knownSha = $f[2] }
         }
     }
-    if ($knownSha -and ($knownAsset -ne $asset -or $knownSha -ne $releaseSha)) {
-        Fail "sha256.sum of $tag lists $asset $releaseSha, but this action pins $knownAsset $knownSha"
+    if ($knownSha -and $knownSha -ne $releaseSha) {
+        Fail "sha256.sum of $tag lists $asset $releaseSha, but this action pins $knownSha"
     }
 
     $archive = Join-Path $work $asset
@@ -119,27 +118,28 @@ try {
 
     $extract = Join-Path $work 'x'
     New-Item -ItemType Directory -Path $extract | Out-Null
-    if ($asset.EndsWith('.zip')) {
+    # cargo-dist puts raeva.exe at the root of the zip, and raeva in a
+    # raeva-<target> directory in a tarball.
+    if ($windows) {
         Expand-Archive -LiteralPath $archive -DestinationPath $extract
+        $inner = 'raeva.exe'
     } else {
         & tar -xf $archive -C $extract
         if ($LASTEXITCODE -ne 0) { Fail "cannot extract $asset" }
+        $inner = "raeva-$target/raeva"
     }
-
-    # Archives from before the rename hold only rv; later ones hold raeva.
-    $binary = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter "raeva$exe" | Select-Object -First 1
-    if (-not $binary) { $binary = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter "rv$exe" | Select-Object -First 1 }
-    if (-not $binary) { Fail "$asset contains neither raeva$exe nor rv$exe" }
+    $binary = Join-Path $extract $inner
+    if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { Fail "$asset has no $inner" }
 
     $binDir = Join-Path $tmpRoot "raeva-$version-$target" | Join-Path -ChildPath 'bin'
     if (Test-Path -LiteralPath $binDir) { Remove-Item -LiteralPath $binDir -Recurse -Force }
     New-Item -ItemType Directory -Path $binDir | Out-Null
     $raeva = Join-Path $binDir "raeva$exe"
-    Copy-Item -LiteralPath $binary.FullName -Destination $raeva
+    Copy-Item -LiteralPath $binary -Destination $raeva
     if ($env:INPUT_RV_ALIAS -eq 'true') {
         # In PowerShell `rv` is an alias of Remove-Variable; scripts there
         # must call rv.exe. Bash steps on Windows can call rv.
-        Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $binDir "rv$exe")
+        Copy-Item -LiteralPath $binary -Destination (Join-Path $binDir "rv$exe")
     }
     if (-not $IsWindows) { & chmod 0755 $raeva }
 } finally {
@@ -157,25 +157,13 @@ Out 'bin-dir' $binDir
 Out 'raeva' $raeva
 
 # Cache inputs. The store paths follow docs/configuration.md "File locations".
-# Before 0.5.0, raeva kept the store on Windows in the roaming %APPDATA%.
-$beforeLocalAppData = [version]($version -replace '-.*$', '') -lt [version]'0.5.0'
 $dataDir = if ($env:RAEVA_HOME) { $env:RAEVA_HOME }
-    elseif ($target -like '*windows*' -and $beforeLocalAppData) { Join-Path $env:APPDATA 'raeva' }
-    elseif ($target -like '*windows*') { Join-Path $env:LOCALAPPDATA 'raeva' }
+    elseif ($windows) { Join-Path $env:LOCALAPPDATA 'raeva' }
     elseif ($target -like '*apple-darwin') { Join-Path $HOME 'Library/Application Support/raeva' }
     elseif ($env:XDG_DATA_HOME) { Join-Path $env:XDG_DATA_HOME 'raeva' }
     else { Join-Path $HOME '.local/share/raeva' }
 
-$lockFile = "$env:INPUT_LOCK_FILE"
-if (-not $lockFile) {
-    $lockFile = 'raeva.lock'
-    if (-not (Test-Path -LiteralPath (Join-Path $workdir 'raeva.lock')) -and (Test-Path -LiteralPath (Join-Path $workdir 'rv.lock'))) {
-        $lockFile = 'rv.lock'
-    }
-}
-Out 'lock-file' $lockFile
-
-$lockPath = Join-Path $workdir $lockFile
+$lockPath = Join-Path $workdir 'raeva.lock'
 if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
     $prefix = "raeva-store-v1-$os-$arch-"
     Out 'cache-key' ($prefix + (Sha256 $lockPath))
@@ -186,5 +174,5 @@ if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
             'cache-paths<<RAEVA_EOF', $store, ('!' + (Join-Path $store 'tmp')), (Join-Path $dataDir 'metadata.db'), 'RAEVA_EOF')
     }
 } else {
-    Write-Output "No $lockFile in $workdir; the store cache is skipped"
+    Write-Output "No raeva.lock in $workdir; the store cache is skipped"
 }

@@ -68,6 +68,10 @@ case " $* " in
   *" sync --frozen "*)
     printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null}]}}'
     exit 7 ;;
+  *" vuln "*" --vex "*)
+    # Three results: no suppressions, an empty list, and one VEX suppressed.
+    printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"raeva"}},"results":[{"ruleId":"GHSA-a","message":{"text":"m"}},{"ruleId":"GHSA-b","message":{"text":"m"},"suppressions":[]},{"ruleId":"GHSA-c","message":{"text":"m"},"suppressions":[{"kind":"external","status":"accepted"}]}]}]}'
+    exit 0 ;;
   *" vuln "*)
     [[ -n "${STUB_NO_SARIF:-}" ]] && { echo "error: no lock" >&2; exit 3; }
     printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"raeva"}},"results":[{"ruleId":"GHSA-x","message":{"text":"m"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"pom.xml"}}}]}],"invocations":[{"executionSuccessful":false}]}]}'
@@ -269,6 +273,16 @@ for i in "${!install_variants[@]}"; do
   # shellcheck disable=SC2086
   run_env "$tag-stub-cat" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_SARIF_CATEGORY=mine $chk scan
   [[ "$(output_of "$tag-stub-cat" sarif-category)" == mine ]] && ok "$tag: category input wins" || bad "$tag: category input wins"
+  # Each line of the vex input is one --vex, and suppressed results are not
+  # findings.
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-vex" env RAEVA_BIN="$stub" STUB_ARGS="$scratch/vex-args-$tag" INPUT_VULN=true \
+    INPUT_VEX=$' vex/a.json\r\n\nvex b.json \n' $chk scan
+  expect "$tag: scan with VEX files" 0 $?
+  [[ "$(tr '\n' '|' < "$scratch/vex-args-$tag")" == *"|--vex|vex/a.json|--vex|vex b.json|"* ]] \
+    && ok "$tag: one --vex per line" || bad "$tag: one --vex per line ($(tr '\n' '|' < "$scratch/vex-args-$tag"))"
+  [[ "$(output_of "$tag-stub-vex" vuln-findings)" == 2 ]] && ok "$tag: suppressed results are not findings" || bad "$tag: suppressed results are not findings ($(output_of "$tag-stub-vex" vuln-findings))"
+  has "$scratch/run-$tag-stub-vex/summary" "2 finding(s), and 1 suppressed by VEX" && ok "$tag: summary counts suppressed results" || bad "$tag: summary counts suppressed results"
   # shellcheck disable=SC2086
   run_env "$tag-stub-nolog" env RAEVA_BIN="$stub" STUB_NO_SARIF=1 INPUT_VULN=true $chk scan
   [[ -z "$(output_of "$tag-stub-nolog" sarif-file)" ]] && ok "$tag: no sarif-file without a log" || bad "$tag: no sarif-file without a log"

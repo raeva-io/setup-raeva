@@ -185,6 +185,7 @@ shell installer skips the check when `sha256sum` is missing.
 | `relock` | `false` | Run `raeva sync` for every recorded platform. Linux and macOS only. |
 | `vuln` | `false` | Run `raeva vuln --format sarif`. |
 | `vuln-fail-on` | `high` | `any`, `low`, `medium`, `high`, `critical`, or `never`. |
+| `vex` | empty | OpenVEX files, one path per line relative to the workspace, passed as `--vex`. Suppressed results stay in the SARIF log but are not counted as findings. |
 | `sarif-upload` | `true` | Upload the SARIF log. The job needs `security-events: write`. |
 | `sarif-category` | empty | Code scanning category; empty means one per `working-directory`. |
 | `rv-alias` | `false` | Also install the command as `rv`. |

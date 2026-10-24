@@ -128,8 +128,14 @@ vuln() {
     never) rv_fail_on=critical ;;
     *) echo "::error title=setup-raeva::vuln-fail-on must be any, low, medium, high, critical, or never"; exit 2 ;;
   esac
-  local sarif="$tmp/raeva.sarif" errlog="$tmp/raeva-vuln.err" code=0
-  "$raeva" -C "$workdir" vuln --format sarif --fail-on "$rv_fail_on" > "$sarif" 2> "$errlog" || code=$?
+  local sarif="$tmp/raeva.sarif" errlog="$tmp/raeva-vuln.err" code=0 vex=() line
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] || vex+=(--vex "$line")
+  done <<< "${INPUT_VEX:-}"
+  "$raeva" -C "$workdir" vuln --format sarif --fail-on "$rv_fail_on" ${vex[@]+"${vex[@]}"} > "$sarif" 2> "$errlog" || code=$?
   cat "$errlog" >&2
   out vuln-exit-code "$code"
   # An incomplete scan (exit 2 or more) still writes the findings it has, so
@@ -148,15 +154,20 @@ vuln() {
       '(.runs[].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= ($p + .)' \
       "$sarif" > "$fixed" && mv "$fixed" "$sarif"
   fi
-  local count=""
-  command -v jq >/dev/null && count=$(jq '[.runs[].results[]?] | length' "$sarif")
+  # A result a VEX statement suppressed is not a finding.
+  local count="" suppressed="" note=""
+  if command -v jq >/dev/null; then
+    count=$(jq '[.runs[].results[]? | select((.suppressions // []) | length == 0)] | length' "$sarif")
+    suppressed=$(jq '[.runs[].results[]? | select((.suppressions // []) | length > 0)] | length' "$sarif")
+  fi
+  [[ "${suppressed:-0}" == 0 ]] || note=", and $suppressed suppressed by VEX"
   out sarif-file "$sarif"
   out sarif-category "$(sarif_category)"
   out vuln-findings "$count"
   if [[ $code -gt 1 ]]; then
-    printf '\n`raeva vuln` did not complete (exit %s): %s finding(s) in the partial SARIF log.\n' "$code" "${count:-?}" >> "$summary"
+    printf '\n`raeva vuln` did not complete (exit %s): %s finding(s)%s in the partial SARIF log.\n' "$code" "${count:-?}" "$note" >> "$summary"
   else
-    printf '\n`raeva vuln`: %s finding(s) in the SARIF log.\n' "${count:-?}" >> "$summary"
+    printf '\n`raeva vuln`: %s finding(s)%s in the SARIF log.\n' "${count:-?}" "$note" >> "$summary"
   fi
 }
 

@@ -135,7 +135,12 @@ function Invoke-Vuln {
     $rvFailOn = if ($failOn -eq 'never') { 'critical' } else { $failOn }
     $sarif = Join-Path $tmp 'raeva.sarif'
     $err = Join-Path $tmp 'raeva-vuln.err'
-    $code = Invoke-Raeva @('-C', $workdir, 'vuln', '--format', 'sarif', '--fail-on', $rvFailOn) $sarif $err
+    $arguments = @('-C', $workdir, 'vuln', '--format', 'sarif', '--fail-on', $rvFailOn)
+    foreach ($line in "$env:INPUT_VEX" -split "`n") {
+        $path = $line.Trim()
+        if ($path) { $arguments += @('--vex', $path) }
+    }
+    $code = Invoke-Raeva $arguments $sarif $err
     Get-Content -LiteralPath $err | Write-Host
     Out 'vuln-exit-code' $code
     # An incomplete scan (exit 2 or more) still writes the findings it has, so
@@ -152,11 +157,13 @@ function Invoke-Vuln {
     # reads them relative to the repository root, so prefix the subdirectory.
     $prefix = ($workdir -replace '\\', '/').TrimEnd('/')
     if ($prefix.StartsWith('./')) { $prefix = $prefix.Substring(2) }
+    # A result a VEX statement suppressed is not a finding.
     $count = 0
+    $suppressed = 0
     foreach ($run in $log.runs) {
         if (-not $run.PSObject.Properties['results']) { continue }
         foreach ($result in $run.results) {
-            $count++
+            if ($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0) { $suppressed++ } else { $count++ }
             if ($prefix -eq '.' -or $prefix -eq '' -or -not $result.PSObject.Properties['locations']) { continue }
             foreach ($location in $result.locations) {
                 $location.physicalLocation.artifactLocation.uri = "$prefix/$($location.physicalLocation.artifactLocation.uri)"
@@ -170,10 +177,11 @@ function Invoke-Vuln {
     Out 'sarif-file' $sarif
     Out 'sarif-category' (Get-SarifCategory)
     Out 'vuln-findings' $count
+    $note = if ($suppressed -gt 0) { ", and $suppressed suppressed by VEX" } else { '' }
     if ($code -gt 1) {
-        Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s) in the partial SARIF log."
+        Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s)$note in the partial SARIF log."
     } else {
-        Summary "`n``raeva vuln``: $count finding(s) in the SARIF log."
+        Summary "`n``raeva vuln``: $count finding(s)$note in the SARIF log."
     }
 }
 

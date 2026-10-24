@@ -63,6 +63,13 @@ inputs:
       Fail the job on findings at or above this severity: any, low, medium,
       high, critical, or never. Unknown severity meets every threshold.
     default: high
+  vex:
+    description: >-
+      OpenVEX files for the scan, one path per line, relative to the
+      workspace. raeva suppresses the findings they mark not_affected; the
+      SARIF log keeps them as suppressed results, which neither count as
+      findings nor fail the job.
+    default: ""
   sarif-upload:
     description: >-
       Upload the SARIF log to GitHub code scanning. The job needs
@@ -115,7 +122,7 @@ outputs:
     description: The code scanning category of the SARIF upload.
     value: ${{ steps.scan-unix.outputs.sarif-category || steps.scan-windows.outputs.sarif-category }}
   vuln-findings:
-    description: The number of results in the SARIF log.
+    description: The number of results in the SARIF log that no VEX statement suppressed.
     value: ${{ steps.scan-unix.outputs.vuln-findings || steps.scan-windows.outputs.vuln-findings }}
 
 runs:
@@ -185,6 +192,7 @@ runs:
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_VULN: ${{ inputs.vuln }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+        INPUT_VEX: ${{ inputs.vex }}
         INPUT_SARIF_CATEGORY: ${{ inputs.sarif-category }}
         INPUT_LOCK_DIFF: ${{ inputs.lock-diff }}
         GH_TOKEN: ${{ inputs.token }}
@@ -200,6 +208,7 @@ runs:
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_VULN: ${{ inputs.vuln }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+        INPUT_VEX: ${{ inputs.vex }}
         INPUT_SARIF_CATEGORY: ${{ inputs.sarif-category }}
 
     # A push by Dependabot runs with a read-only token and the upload is

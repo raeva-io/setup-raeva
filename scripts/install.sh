@@ -50,13 +50,22 @@ if [[ -r /etc/alpine-release ]] || { command -v ldd >/dev/null && ldd --version 
   die "raeva release builds need glibc; this runner or container uses musl"
 fi
 
+mirror="$base_url"
 base_url="${base_url:-https://github.com/$repo/releases/download/$tag}"
 base_url="${base_url%/}"
 asset="raeva-$target.tar.gz"
 work=$(mktemp -d "$tmp_root/raeva-setup.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
-curl_get "$base_url/sha256.sum" "$work/sha256.sum" || die "cannot download sha256.sum for $tag from $base_url"
+# A private repository serves release assets only through the API, so a
+# failed plain download is retried with gh and the token.
+fetch() { # <asset name>
+  curl_get "$base_url/$1" "$work/$1" 2>/dev/null && return 0
+  [[ -z "$mirror" && -n "${GH_TOKEN:-}" ]] && command -v gh >/dev/null || return 1
+  gh release download "$tag" --repo "$repo" --pattern "$1" --dir "$work" --clobber
+}
+
+fetch sha256.sum || die "cannot download sha256.sum for $tag from $base_url"
 
 # sha256.sum lines look like "<hex> *<asset>".
 release_sha=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$work/sha256.sum")
@@ -70,7 +79,7 @@ if [[ -n "$known_sha" && "$known_sha" != "$release_sha" ]]; then
   die "sha256.sum of $tag lists $asset $release_sha, but this action pins $known_sha"
 fi
 
-curl_get "$base_url/$asset" "$work/$asset" || die "cannot download $asset"
+fetch "$asset" || die "cannot download $asset"
 
 if command -v sha256sum >/dev/null; then
   actual=$(sha256sum "$work/$asset" | cut -d' ' -f1)

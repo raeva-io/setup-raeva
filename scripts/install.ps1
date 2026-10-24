@@ -65,13 +65,23 @@ $windows = $target -like '*windows*'
 $exe = if ($windows) { '.exe' } else { '' }
 $asset = if ($windows) { "raeva-$target.zip" } else { "raeva-$target.tar.gz" }
 
+$mirror = $baseUrl
 if (-not $baseUrl) { $baseUrl = "https://github.com/$repo/releases/download/$tag" }
 $baseUrl = $baseUrl.TrimEnd('/')
 $work = Join-Path $tmpRoot ("raeva-setup." + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
+# A private repository serves release assets only through the API, so a
+# failed plain download is retried with gh and the token.
+function Get-Asset([string]$Name) {
+    try { Get-File "$baseUrl/$Name" (Join-Path $work $Name); return } catch {
+        if ($mirror -or -not $env:GH_TOKEN -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { throw }
+    }
+    & gh release download $tag --repo $repo --pattern $Name --dir $work --clobber
+    if ($LASTEXITCODE -ne 0) { throw "gh release download failed for $Name" }
+}
 try {
     $sumFile = Join-Path $work 'sha256.sum'
-    try { Get-File "$baseUrl/sha256.sum" $sumFile } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
+    try { Get-Asset 'sha256.sum' } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
 
     # sha256.sum lines look like "<hex> *<asset>".
     $shas = @(Get-Content -LiteralPath $sumFile | ForEach-Object {
@@ -96,7 +106,7 @@ try {
     }
 
     $archive = Join-Path $work $asset
-    try { Get-File "$baseUrl/$asset" $archive } catch { Fail "cannot download ${asset}: $_" }
+    try { Get-Asset $asset } catch { Fail "cannot download ${asset}: $_" }
     $actual = Sha256 $archive
     if ($actual -ne $releaseSha) { Fail "$asset has SHA-256 $actual, sha256.sum says $releaseSha" }
     if ($knownSha) {

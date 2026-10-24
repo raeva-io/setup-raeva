@@ -20,8 +20,9 @@ inputs:
     default: attestation
   token:
     description: >-
-      Read token for the attestations and, with lock-diff, for the base
-      commit's raeva.lock (contents: read). It needs no write scope.
+      Read token for the attestations, for the release download when the
+      repository is private, and, with lock-diff, for the base commit's
+      raeva.lock (contents: read). It needs no write scope.
     default: ${{ github.token }}
   cache:
     description: >-
@@ -50,7 +51,9 @@ inputs:
   lock-diff:
     description: >-
       With check, on a pull request, write the semantic diff between the base
-      commit's raeva.lock and this one to the job summary. Linux and macOS.
+      commit's raeva.lock and this one to the job summary. 'only' writes the
+      diff and skips check and vuln, for a job without credentials, such as
+      one for pull requests from forks. Linux and macOS.
     default: "true"
   vuln:
     description: Run `raeva vuln --format sarif` after the frozen check.
@@ -172,7 +175,7 @@ runs:
         INPUT_PLATFORMS: ${{ inputs.platforms }}
 
     - id: scan-unix
-      if: runner.os != 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true')
+      if: runner.os != 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true' || inputs.lock-diff == 'only')
       shell: bash
       run: '"$GITHUB_ACTION_PATH/scripts/check.sh" scan'
       env:

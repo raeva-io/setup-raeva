@@ -249,7 +249,12 @@ relock() {
 case "$mode" in
   relock) relock ;;
   scan)
-    if [[ "${INPUT_CHECK:-false}" == true && "${INPUT_LOCK_DIFF:-true}" == true ]]; then pr_diff || true; fi
+    # lock-diff: only writes the diff without the check, for a job without
+    # the credentials that resolution needs.
+    case "${INPUT_LOCK_DIFF:-true}/${INPUT_CHECK:-false}" in
+      only/*) pr_diff || true; exit 0 ;;
+      true/true) pr_diff || true ;;
+    esac
     [[ "${INPUT_CHECK:-false}" != true ]] || frozen
     [[ "${INPUT_VULN:-false}" != true ]] || vuln
     ;;

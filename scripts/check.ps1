@@ -30,6 +30,7 @@ function Invoke-Raeva([string[]]$Arguments, [string]$StdOut, [string]$StdErr) {
     return $p.ExitCode
 }
 
+# Used only when raeva gives no hints of its own.
 function Hint([string]$Code) {
     switch ($Code) {
         'LOCKFILE_MISMATCH' { "Run 'raeva sync' and commit raeva.lock." }
@@ -39,6 +40,28 @@ function Hint([string]$Code) {
         'AUTH'              { 'Give the job the repository credentials: a settings.xml <server> that reads them with ${env.NAME}.' }
         default             { 'See the error codes in docs/json-output.md of raeva.' }
     }
+}
+
+# Text from raeva quotes POM and repository data, so it goes into the
+# summary inside a fence it cannot close.
+function Fenced([string]$Text) {
+    Summary "`n````text`n$($Text.Replace('````', "''''"))`n````"
+}
+
+# Repeats the envelope's warnings as annotations, at most 20 of them.
+function Write-Warnings($Envelope, [string]$Command) {
+    if (-not $Envelope -or -not $Envelope.PSObject.Properties['data'] -or -not $Envelope.data -or
+        -not $Envelope.data.PSObject.Properties['warnings']) { return }
+    $all = @($Envelope.data.warnings)
+    if ($all.Count -eq 0) { return }
+    $lines = @()
+    foreach ($w in ($all | Select-Object -First 20)) {
+        Write-Output "::warning title=$(EscProp "raeva $($w.code)")::$(EscMsg "$($w.message)")"
+        $lines += "$($w.code) $($w.message)"
+    }
+    if ($all.Count -gt 20) { Write-Output "::warning title=raeva::$($all.Count - 20) more warnings; 'raeva --json $Command' lists them" }
+    Summary "`nWarnings:"
+    Fenced ($lines -join "`n")
 }
 
 function Invoke-Frozen {
@@ -55,16 +78,29 @@ function Invoke-Frozen {
         $resolved = if ($envelope -and $envelope.data.PSObject.Properties['resolved']) { " ($($envelope.data.resolved) dependencies)" } else { '' }
         Write-Output "raeva.lock is current$resolved"
         Summary "### raeva`n`n``raeva.lock`` is current for this runner."
+        Write-Warnings $envelope 'sync --frozen'
         return
     }
     $ecode = if ($envelope -and $envelope.PSObject.Properties['code']) { "$($envelope.code)" } else { '' }
     $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { Get-Content -LiteralPath $json -Raw }
+    $hints = if ($envelope -and $envelope.PSObject.Properties['hints'] -and @($envelope.hints).Count -gt 0) { @($envelope.hints) -join "`n" } else { Hint $ecode }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
     $lockPath = "$workdir/raeva.lock"
     if ($lockPath.StartsWith('./')) { $lockPath = $lockPath.Substring(2) }
-    Write-Output "::error file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message. $(Hint $ecode)")"
-    Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' })).`n`n$(Hint $ecode)"
+    Write-Output "::error file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
+    Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
+    Fenced "$message`n`n$hints"
+    Write-Warnings $envelope 'sync --frozen'
     exit $code
+}
+
+# The code scanning category: the input, or one per working directory so
+# the alerts of two Maven roots do not replace each other.
+function Get-SarifCategory {
+    if ($env:INPUT_SARIF_CATEGORY) { return $env:INPUT_SARIF_CATEGORY }
+    $dir = ($workdir -replace '\\', '/').TrimEnd('/')
+    if ($dir.StartsWith('./')) { $dir = $dir.Substring(2) }
+    if ($dir -eq '' -or $dir -eq '.') { 'raeva' } else { "raeva/$dir" }
 }
 
 function Invoke-Vuln {
@@ -79,11 +115,16 @@ function Invoke-Vuln {
     $code = Invoke-Raeva @('-C', $workdir, 'vuln', '--format', 'sarif', '--fail-on', $rvFailOn) $sarif $err
     Get-Content -LiteralPath $err | Write-Host
     Out 'vuln-exit-code' $code
-    if ($code -gt 1) {
+    # An incomplete scan (exit 2 or more) still writes the findings it has, so
+    # its log is uploaded; the gate step fails the job afterwards.
+    $log = $null
+    try { $log = Get-Content -LiteralPath $sarif -Raw | ConvertFrom-Json } catch { }
+    if (-not $log -or -not $log.PSObject.Properties['runs']) {
+        if ($code -le 1) { Write-Output '::error title=raeva vuln::the SARIF log is not valid'; exit 2 }
         Remove-Item -LiteralPath $sarif -ErrorAction SilentlyContinue
+        Summary "`n``raeva vuln`` did not complete (exit $code) and wrote no SARIF log."
         return
     }
-    $log = Get-Content -LiteralPath $sarif -Raw | ConvertFrom-Json
     # raeva writes result locations relative to the project root. Code scanning
     # reads them relative to the repository root, so prefix the subdirectory.
     $prefix = ($workdir -replace '\\', '/').TrimEnd('/')
@@ -104,8 +145,13 @@ function Invoke-Vuln {
         [IO.File]::WriteAllText($sarif, $text, [Text.UTF8Encoding]::new($false))
     }
     Out 'sarif-file' $sarif
+    Out 'sarif-category' (Get-SarifCategory)
     Out 'vuln-findings' $count
-    Summary "`n``raeva vuln``: $count finding(s) in the SARIF log."
+    if ($code -gt 1) {
+        Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s) in the partial SARIF log."
+    } else {
+        Summary "`n``raeva vuln``: $count finding(s) in the SARIF log."
+    }
 }
 
 function Invoke-Gate {

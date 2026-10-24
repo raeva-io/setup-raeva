@@ -55,7 +55,7 @@ run_relock_job() { # <workdir>
   git clone --quiet "$t/remote.git" "$1" && git -C "$1" checkout --quiet "$head_sha"
   mkdir -p "$1.temp"
   : > "$1.out"
-  (cd "$1" && env RAEVA_BIN="$RAEVA_BUILD" INPUT_WORKING_DIRECTORY=. GITHUB_OUTPUT="$1.out" \
+  (cd "$1" && env RAEVA_BIN="$RAEVA_BUILD" INPUT_WORKING_DIRECTORY=. GITHUB_OUTPUT="$1.out" RUNNER_TEMP="$1.temp" \
     bash "$here/scripts/check.sh" relock > "$1.log" 2>&1 &&
     env RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" bash -e "$t/diff.sh" >> "$1.log" 2>&1)
 }
@@ -114,6 +114,32 @@ mkdir -p "$t/mac-only" && cp "$PROJECT/pom.xml" "$t/mac-only/"
 (cd "$t/mac-only" && env RAEVA_BIN="$RAEVA_BUILD" bash "$here/scripts/check.sh" relock > "$t/mac-only.log" 2>&1)
 only=$("$RAEVA_BUILD" --json -C "$t/mac-only" lock info | jq -r '[.data.platforms[].platform] | join(",")')
 [[ "$only" == macos-aarch64 ]] && ok "relock adds no platform" || bad "relock adds no platform ($only)"
+
+relock_in() { # <dir>: runs check.sh relock there with its own outputs
+  mkdir -p "$1.temp"
+  : > "$1.out"; : > "$1.summary"
+  (cd "$1" && env RAEVA_BIN="$RAEVA_BUILD" RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" \
+    GITHUB_STEP_SUMMARY="$1.summary" bash "$here/scripts/check.sh" relock > "$1.log" 2>&1)
+}
+
+# A lock with merge conflict markers, as a rebase leaves it: relock reads the
+# platforms from its text and writes it again; strict parsing would refuse it.
+mkdir -p "$t/conflict" && cp "$t/after/pom.xml" "$t/conflict/"
+awk 'NR == 4 { print "<<<<<<< HEAD" } { print } NR == 6 { print "======="; print "model_hash = \"0\""; print ">>>>>>> main" }' \
+  "$t/after/raeva.lock" > "$t/conflict/raeva.lock"
+"$RAEVA_BUILD" -q -C "$t/conflict" lock info >/dev/null 2>&1 && bad "test setup: the conflicted lock parses"
+relock_in "$t/conflict"
+code=$?
+[[ $code -eq 0 ]] && ok "relock recovers a conflicted lock" || { bad "relock recovers a conflicted lock (exit $code)"; cat "$t/conflict.log"; }
+grep -q "^relocked-platforms=$platforms\$" "$t/conflict.out" && ok "conflicted lock keeps every platform" || bad "conflicted lock keeps every platform"
+(cd "$t/conflict" && "$RAEVA_BUILD" -q sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "rewritten lock passes --frozen" || bad "rewritten lock passes --frozen"
+grep -q "raeva.lock written again" "$t/conflict.summary" && ok "relock writes a summary" || bad "relock writes a summary"
+
+# A lock that names no platform: relock locks the runner's and warns.
+mkdir -p "$t/garbage" && cp "$t/after/pom.xml" "$t/garbage/" && printf 'garbage' > "$t/garbage/raeva.lock"
+relock_in "$t/garbage"
+code=$?
+[[ $code -eq 0 ]] && grep -q "names no platform" "$t/garbage.log" && ok "relock warns when no platform is named" || bad "relock warns when no platform is named (exit $code)"
 
 echo "passed $pass, failed $fail"
 [[ $fail -eq 0 ]]

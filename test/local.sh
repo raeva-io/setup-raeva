@@ -56,6 +56,25 @@ run_env() { # run_env <name> <script...>; sets up a fresh RUNNER_TEMP and output
 }
 output_of() { sed -n "s/^$2=//p" "$scratch/run-$1/output" | head -n 1; }
 
+# A stand-in for raeva that prints fixed answers: a frozen failure with hints
+# and a warning, and an incomplete scan with a partial SARIF log.
+stub="$scratch/stub/raeva"
+mkdir -p "$scratch/stub"
+cat > "$stub" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" sync --frozen "*)
+    printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":null}]}}'
+    exit 7 ;;
+  *" vuln "*)
+    [[ -n "${STUB_NO_SARIF:-}" ]] && { echo "error: no lock" >&2; exit 3; }
+    printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"raeva"}},"results":[{"ruleId":"GHSA-x","message":{"text":"m"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"pom.xml"}}}]}],"invocations":[{"executionSuccessful":false}]}]}'
+    exit 4 ;;
+esac
+exit 99
+EOF
+chmod +x "$stub"
+
 install_variants=("bash $here/scripts/install.sh")
 check_variants=("bash $here/scripts/check.sh")
 if [[ -n "${PWSH:-}" ]]; then
@@ -204,6 +223,33 @@ for i in "${!install_variants[@]}"; do
   # shellcheck disable=SC2086
   run_env "$tag-gate-err" env VULN_EXIT_CODE=4 INPUT_VULN_FAIL_ON=never $chk gate
   expect "$tag: gate fails when the scan did not complete" 4 $?
+
+  # The CLI's own hints and warnings reach the annotations and the summary.
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-frozen" env RAEVA_BIN="$stub" INPUT_CHECK=true INPUT_WORKING_DIRECTORY=. $chk scan
+  expect "$tag: stub frozen failure keeps its exit code" 7 $?
+  log="$scratch/run-$tag-stub-frozen/log"
+  has "$log" "Run raeva sync --platforms linux-x86_64 and commit raeva.lock" && ok "$tag: annotation keeps the CLI hint" || bad "$tag: annotation keeps the CLI hint"
+  has "$log" "See the error codes" && bad "$tag: no generic hint when the CLI gave one" || ok "$tag: no generic hint when the CLI gave one"
+  has "$log" "^::warning title=raeva AUTH_FALLBACK::central refused" && ok "$tag: warning annotation" || bad "$tag: warning annotation"
+  has "$scratch/run-$tag-stub-frozen/summary" "gson  2.13.2 -> 2.13.1" && ok "$tag: summary lists the change" || bad "$tag: summary lists the change"
+  has "$scratch/run-$tag-stub-frozen/summary" "''''" && ok "$tag: summary fence cannot be closed" || bad "$tag: summary fence cannot be closed"
+
+  # An incomplete scan keeps its partial SARIF log, under a category per root.
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-vuln" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_WORKING_DIRECTORY=sub/dir $chk scan
+  expect "$tag: incomplete scan step succeeds so the upload runs" 0 $?
+  [[ "$(output_of "$tag-stub-vuln" vuln-exit-code)" == 4 ]] && ok "$tag: incomplete scan exit code kept" || bad "$tag: incomplete scan exit code kept"
+  psarif=$(output_of "$tag-stub-vuln" sarif-file)
+  [[ -s "$psarif" ]] && ok "$tag: partial SARIF kept" || bad "$tag: partial SARIF kept"
+  [[ "$(jq -r '.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri' "$psarif" 2>/dev/null)" == sub/dir/pom.xml ]] && ok "$tag: partial SARIF uri prefixed" || bad "$tag: partial SARIF uri prefixed"
+  [[ "$(output_of "$tag-stub-vuln" sarif-category)" == raeva/sub/dir ]] && ok "$tag: category per working directory" || bad "$tag: category per working directory"
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-cat" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_SARIF_CATEGORY=mine $chk scan
+  [[ "$(output_of "$tag-stub-cat" sarif-category)" == mine ]] && ok "$tag: category input wins" || bad "$tag: category input wins"
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-nolog" env RAEVA_BIN="$stub" STUB_NO_SARIF=1 INPUT_VULN=true $chk scan
+  [[ -z "$(output_of "$tag-stub-nolog" sarif-file)" ]] && ok "$tag: no sarif-file without a log" || bad "$tag: no sarif-file without a log"
 done
 
 # The real release, with its build attestation and the pinned checksums.

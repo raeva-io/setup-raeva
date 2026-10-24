@@ -27,11 +27,11 @@ $tmpRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempP
 if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Fail "repository must be OWNER/NAME, got '$repo'" }
 if ($verify -notin @('attestation', 'sha256')) { Fail "verify must be 'attestation' or 'sha256', got '$verify'" }
 
-function Get-File([string]$Url, [string]$Path) {
+function Get-File([string]$Url, [string]$Path, [int]$Retries = 3) {
     if ($Url.StartsWith('file://')) {
         Copy-Item -LiteralPath ([Uri]$Url).LocalPath -Destination $Path
     } elseif ($Url.StartsWith('https://')) {
-        Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount 3 -RetryIntervalSec 2 -UseBasicParsing
+        Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount $Retries -RetryIntervalSec 2 -UseBasicParsing
     } else {
         Fail "download URLs must use https, got '$Url'"
     }
@@ -73,8 +73,11 @@ New-Item -ItemType Directory -Path $work | Out-Null
 # A private repository serves release assets only through the API, so a
 # failed plain download is retried with gh and the token.
 function Get-Asset([string]$Name) {
-    try { Get-File "$baseUrl/$Name" (Join-Path $work $Name); return } catch {
-        if ($mirror -or -not $env:GH_TOKEN -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { throw }
+    # Invoke-WebRequest retries a 404 too, which a private release always
+    # gives, so with gh to fall back on it tries once.
+    $fallback = -not $mirror -and $env:GH_TOKEN -and (Get-Command gh -ErrorAction SilentlyContinue)
+    try { Get-File "$baseUrl/$Name" (Join-Path $work $Name) $(if ($fallback) { 0 } else { 3 }); return } catch {
+        if (-not $fallback) { throw }
     }
     & gh release download $tag --repo $repo --pattern $Name --dir $work --clobber
     if ($LASTEXITCODE -ne 0) { throw "gh release download failed for $Name" }

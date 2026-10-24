@@ -33,7 +33,9 @@ jobs:
           raeva export-m2 --m2-path "$RUNNER_TEMP/deps"
           raeva --json export-checksums | jq -r '.data.maven_properties[]' > "$RUNNER_TEMP/trusted.args"
       # The plugins Maven needs depend on the goals, so both runs use the
-      # same goals, profiles, and settings.xml. The cache holds the plugins
+      # same goals, profiles, and settings.xml. The online run checks the
+      # locked dependencies it downloads against their pins too, before any
+      # test runs them; plugins have no pins. The cache holds the plugins
       # until a POM changes.
       - id: plugins
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -42,7 +44,9 @@ jobs:
           key: maven-plugins-${{ runner.os }}-${{ hashFiles('**/pom.xml', '.mvn/maven.config', '.mvn/extensions.xml') }}
       - name: Fetch the build plugins
         if: steps.plugins.outputs.cache-hit != 'true'
-        run: mvn --batch-mode -Dmaven.repo.local="$RUNNER_TEMP/plugins" verify
+        run: |
+          mapfile -t trusted < "$RUNNER_TEMP/trusted.args"
+          mvn --batch-mode verify "${trusted[@]}" -Dmaven.repo.local="$RUNNER_TEMP/plugins"
       - name: Build offline
         run: |
           mapfile -t trusted < "$RUNNER_TEMP/trusted.args"

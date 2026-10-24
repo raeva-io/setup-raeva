@@ -30,9 +30,17 @@ curl_get() {
 
 if [[ "$version" == "latest" ]]; then
   [[ -z "$base_url" ]] || die "version 'latest' needs the GitHub release host; set an exact version with download-base-url"
-  effective=$(curl --proto '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' \
-    "https://github.com/$repo/releases/latest") || die "cannot resolve the latest release of $repo"
-  version="${effective##*/tag/v}"
+  if effective=$(curl --proto '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$repo/releases/latest" 2>/dev/null); then
+    version="${effective##*/tag/v}"
+  elif [[ -n "${GH_TOKEN:-}" ]] && command -v gh >/dev/null; then
+    # A private repository answers 404 without the token.
+    version=$(gh release view --repo "$repo" --json tagName --jq .tagName) \
+      || die "cannot resolve the latest release of $repo"
+    version="${version#v}"
+  else
+    die "cannot resolve the latest release of $repo"
+  fi
   echo "::notice title=setup-raeva::version 'latest' resolved to $version; pin it to make runs repeatable"
 fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || die "version must be X.Y.Z or 'latest', got '$version'"
@@ -121,6 +129,7 @@ if [[ "$rv_alias" == "true" ]]; then
   ln -s raeva "$bin_dir/rv"
 fi
 
+unset GH_TOKEN
 reported=$("$bin_dir/raeva" --version) || die "the installed binary does not run on this runner"
 [[ "${reported##* }" == "$version" ]] || die "installed binary reports '$reported', expected $version"
 echo "Installed $reported to $bin_dir"

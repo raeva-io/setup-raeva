@@ -57,11 +57,13 @@ run_env() { # run_env <name> <script...>; sets up a fresh RUNNER_TEMP and output
 output_of() { sed -n "s/^$2=//p" "$scratch/run-$1/output" | head -n 1; }
 
 # A stand-in for raeva that prints fixed answers: a frozen failure with hints
-# and a warning, and an incomplete scan with a partial SARIF log.
+# and a warning, an incomplete scan with a partial SARIF log, and a long lock
+# diff. With STUB_ARGS it records its arguments and whether it saw GH_TOKEN.
 stub="$scratch/stub/raeva"
 mkdir -p "$scratch/stub"
 cat > "$stub" <<'EOF'
 #!/usr/bin/env bash
+[[ -z "${STUB_ARGS:-}" ]] || { printf '%s\n' "$@" "GH_TOKEN=${GH_TOKEN-unset}" > "$STUB_ARGS"; }
 case " $* " in
   *" sync --frozen "*)
     printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null}]}}'
@@ -70,6 +72,14 @@ case " $* " in
     [[ -n "${STUB_NO_SARIF:-}" ]] && { echo "error: no lock" >&2; exit 3; }
     printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"raeva"}},"results":[{"ruleId":"GHSA-x","message":{"text":"m"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"pom.xml"}}}]}],"invocations":[{"executionSuccessful":false}]}]}'
     exit 4 ;;
+  *" lock diff "*)
+    seq 1 50000
+    exit 0 ;;
+  *" sync "*)
+    # A plain sync rewrites the lock in the -C directory.
+    while [[ $# -gt 0 && "$1" != -C ]]; do shift; done
+    printf '# written again\n' >> "${2:-.}/raeva.lock"
+    exit 0 ;;
 esac
 exit 99
 EOF
@@ -235,6 +245,17 @@ for i in "${!install_variants[@]}"; do
   [[ $(grep -c "^::warning title=raeva AUTH_FALLBACK" "$log") -eq 1 ]] && ok "$tag: no repeated warning annotation" || bad "$tag: no repeated warning annotation"
   has "$scratch/run-$tag-stub-frozen/summary" "gson  2.13.2 -> 2.13.1" && ok "$tag: summary lists the change" || bad "$tag: summary lists the change"
   has "$scratch/run-$tag-stub-frozen/summary" "''''" && ok "$tag: summary fence cannot be closed" || bad "$tag: summary fence cannot be closed"
+  grep -qx '````text' "$scratch/run-$tag-stub-frozen/summary" && grep -qx '````' "$scratch/run-$tag-stub-frozen/summary" \
+    && ok "$tag: summary text sits in a four-backtick fence" || bad "$tag: summary text sits in a four-backtick fence"
+
+  # Each argument reaches raeva as one argument, and the token never does.
+  odd='dir with "quotes" and a trailing backslash\'
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-args" env RAEVA_BIN="$stub" STUB_ARGS="$scratch/args-$tag" GH_TOKEN=not-for-raeva \
+    INPUT_CHECK=true INPUT_LOCK_DIFF=false INPUT_WORKING_DIRECTORY="$odd" $chk scan
+  [[ "$(sed -n '3p' "$scratch/args-$tag")" == "$odd" && "$(sed -n '4p' "$scratch/args-$tag")" == sync ]] \
+    && ok "$tag: working directory passed as one argument" || bad "$tag: working directory passed as one argument"
+  has "$scratch/args-$tag" '^GH_TOKEN=unset$' && ok "$tag: raeva does not see the token" || bad "$tag: raeva does not see the token"
 
   # An incomplete scan keeps its partial SARIF log, under a category per root.
   # shellcheck disable=SC2086
@@ -252,6 +273,15 @@ for i in "${!install_variants[@]}"; do
   run_env "$tag-stub-nolog" env RAEVA_BIN="$stub" STUB_NO_SARIF=1 INPUT_VULN=true $chk scan
   [[ -z "$(output_of "$tag-stub-nolog" sarif-file)" ]] && ok "$tag: no sarif-file without a log" || bad "$tag: no sarif-file without a log"
 done
+
+# A relock whose lock diff is longer than a pipe buffer still succeeds, with
+# the summary cut to 200 lines.
+relock_dir="$scratch/relock-long"
+mkdir -p "$relock_dir"
+printf 'platform = "linux-x86_64"\n' > "$relock_dir/raeva.lock"
+run_env relock-long env RAEVA_BIN="$stub" INPUT_WORKING_DIRECTORY="$relock_dir" bash "$here/scripts/check.sh" relock
+expect "bash: relock with a long lock diff succeeds" 0 $?
+has "$scratch/run-relock-long/summary" "49800 more lines" && ok "bash: long lock diff cut to 200 lines" || bad "bash: long lock diff cut to 200 lines"
 
 # The real release, with its build attestation and the pinned checksums.
 if [[ -n "${GH_TOKEN:-}" && -n "${RELEASE_VERSION:-}" ]]; then

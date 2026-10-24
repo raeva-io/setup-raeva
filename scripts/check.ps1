@@ -8,6 +8,8 @@ Set-StrictMode -Version 3.0
 $raeva = if ($env:RAEVA_BIN) { $env:RAEVA_BIN } else { 'raeva' }
 $workdir = if ($env:INPUT_WORKING_DIRECTORY) { $env:INPUT_WORKING_DIRECTORY } else { '.' }
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+# raeva never needs the token.
+Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
 
 function Out([string]$Name, [string]$Value) {
     if ($env:GITHUB_OUTPUT) { Add-Content -Path $env:GITHUB_OUTPUT -Value "$Name=$Value" -Encoding utf8 }
@@ -21,13 +23,26 @@ function EscMsg([string]$s) { $s.Replace('%', '%25').Replace("`r", '%0D').Replac
 function EscProp([string]$s) { (EscMsg $s).Replace(':', '%3A').Replace(',', '%2C') }
 
 # Runs raeva with stdout and stderr in files, so the bytes of a SARIF log are
-# kept as raeva wrote them, and returns the exit code.
+# kept as raeva wrote them, and returns the exit code. ArgumentList quotes
+# each argument for the Windows command line, a trailing backslash included.
 function Invoke-Raeva([string[]]$Arguments, [string]$StdOut, [string]$StdErr) {
-    # Start-Process joins the list with spaces, so quote what needs it.
-    $quoted = $Arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }
-    $p = Start-Process -FilePath $raeva -ArgumentList $quoted -NoNewWindow -Wait -PassThru `
-        -RedirectStandardOutput $StdOut -RedirectStandardError $StdErr
-    return $p.ExitCode
+    $psi = [Diagnostics.ProcessStartInfo]::new($raeva)
+    foreach ($argument in $Arguments) { $psi.ArgumentList.Add($argument) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $out = [IO.File]::Create($StdOut)
+    $err = [IO.File]::Create($StdErr)
+    try {
+        $p = [Diagnostics.Process]::Start($psi)
+        $copies = @($p.StandardOutput.BaseStream.CopyToAsync($out), $p.StandardError.BaseStream.CopyToAsync($err))
+        $p.WaitForExit()
+        [Threading.Tasks.Task]::WaitAll($copies)
+        return $p.ExitCode
+    } finally {
+        $out.Dispose()
+        $err.Dispose()
+    }
 }
 
 # Used only when raeva gives no hints of its own.
@@ -45,7 +60,8 @@ function Hint([string]$Code) {
 # Text from raeva quotes POM and repository data, so it goes into the
 # summary inside a fence it cannot close.
 function Fenced([string]$Text) {
-    Summary "`n````text`n$($Text.Replace('````', "''''"))`n````"
+    $fence = '````'
+    Summary ("`n" + $fence + "text`n" + $Text.Replace($fence, "''''") + "`n" + $fence)
 }
 
 # One annotation per warning code, as raeva's own text summary prints them:

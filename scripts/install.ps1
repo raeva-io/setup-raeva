@@ -39,8 +39,16 @@ function Get-File([string]$Url, [string]$Path, [int]$Retries = 3) {
 
 if ($version -eq 'latest') {
     if ($baseUrl) { Fail "version 'latest' needs the GitHub release host; set an exact version with download-base-url" }
-    $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -Method Head -UseBasicParsing
-    $version = ($response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -split '/tag/v')[-1]
+    try {
+        $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -Method Head -UseBasicParsing
+        $version = ($response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -split '/tag/v')[-1]
+    } catch {
+        # A private repository answers 404 without the token.
+        if (-not $env:GH_TOKEN -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail "cannot resolve the latest release of ${repo}: $_" }
+        $tagName = & gh release view --repo $repo --json tagName --jq .tagName
+        if ($LASTEXITCODE -ne 0) { Fail "cannot resolve the latest release of $repo" }
+        $version = "$tagName" -replace '^v', ''
+    }
     Write-Output "::notice title=setup-raeva::version 'latest' resolved to $version; pin it to make runs repeatable"
 }
 if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$') { Fail "version must be X.Y.Z or 'latest', got '$version'" }
@@ -159,6 +167,7 @@ try {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
 $reported = & $raeva --version
 if ($LASTEXITCODE -ne 0) { Fail 'the installed binary does not run on this runner' }
 if (($reported -split ' ')[-1] -ne $version) { Fail "installed binary reports '$reported', expected $version" }

@@ -128,10 +128,9 @@ on the job that has credentials, or never save a cache there.
 
 A pull request from a fork gets no secrets and a read-only token, even when
 the fork's author is a collaborator, unless the settings of a private
-repository send them. The read-only token can still read the
-base commit's `raeva.lock`, so `lock-diff: only` shows the lock diff in a job
-without credentials, and a SARIF upload is refused with a warning while the
-job continues.
+repository send them. The read-only token can still read the base commit's
+`raeva.lock`, so `lock-diff: only` shows the lock diff in a job without
+credentials.
 
 ## What the action does
 
@@ -237,8 +236,9 @@ with other bytes. A scheduled job with `cache: false` does.
   fence it cannot close.
 - The SARIF upload needs `security-events: write`, and in a private
   repository also `actions: read` and GitHub Code Security. A refused upload,
-  such as one from a fork or a Dependabot `push` with a read-only token, logs
-  an error but does not fail the job; findings still fail it.
+  such as one to a private repository without Code Security or from a
+  Dependabot `push` with a read-only token, logs an error but does not fail
+  the job; findings still fail it.
 - `known-checksums.txt` changes only in a reviewed pull request, after the
   release's attestations were verified.
 

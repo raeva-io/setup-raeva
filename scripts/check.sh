@@ -13,6 +13,9 @@ raeva="${RAEVA_BIN:-raeva}"
 workdir="${INPUT_WORKING_DIRECTORY:-.}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 tmp="${RUNNER_TEMP:-/tmp}"
+# Only the contents API request uses the token; raeva never sees it.
+token="${GH_TOKEN:-}"
+unset GH_TOKEN
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
 
 # Workflow commands need %, CR, and LF escaped in messages, and also : and ,
@@ -35,7 +38,7 @@ json_field() {
   if command -v jq >/dev/null; then
     jq -r --arg f "$1" '.[$f] // empty' "$2" 2>/dev/null || true
   elif [[ "$1" == code ]]; then
-    sed -n 's/.*"code":"\([A-Z_]*\)".*/\1/p' "$2" | head -n 1
+    sed -n '/"code":"[A-Z_]*"/{s/.*"code":"\([A-Z_]*\)".*/\1/p;q;}' "$2"
   fi
 }
 
@@ -184,7 +187,8 @@ diff_summary() { # <title> <old> <new>
   local lines
   lines=$(printf '%s\n' "$text" | wc -l)
   if [[ $lines -gt 200 ]]; then
-    text="$(printf '%s\n' "$text" | head -n 200)"$'\n'"... $((lines - 200)) more lines; run 'raeva lock diff' locally"
+    # sed reads all its input; head would exit early and fail the pipeline.
+    text="$(printf '%s\n' "$text" | sed -n '1,200p')"$'\n'"... $((lines - 200)) more lines; run 'raeva lock diff' locally"
   fi
   fenced "$text"
 }
@@ -205,8 +209,9 @@ pr_diff() {
   fi
   local encoded old="$tmp/raeva-base.lock" status
   encoded=$(jq -rn --arg p "$path" '$p | split("/") | map(@uri) | join("/")')
-  status=$(curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 \
-    -H "Authorization: Bearer ${GH_TOKEN:-}" -H 'Accept: application/vnd.github.raw+json' \
+  # The header comes on stdin so the token is not in curl's arguments.
+  status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 \
+    -H @- -H 'Accept: application/vnd.github.raw+json' \
     -o "$old" -w '%{http_code}' \
     "${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/contents/$encoded?ref=$base") || status=000
   case "$status" in

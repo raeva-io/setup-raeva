@@ -1,0 +1,42 @@
+# .github/workflows/enforce.yml: build with Maven from the locked artifacts
+# only. raeva.lock holds no build plugins, so one online Maven run fills a
+# separate local repository with them, and the offline build reads it as a
+# tail. Maven Trusted Checksums fail any file whose bytes differ from its pin.
+name: Locked build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - id: raeva
+        uses: raeva-io/setup-raeva@v1.0.0
+        with:
+          version: 0.5.0
+          check: true
+      - name: Export the locked artifacts and their checksums
+        run: |
+          raeva export-m2 --m2-path "$RUNNER_TEMP/deps"
+          raeva --json export-checksums | jq -r '.data.maven_properties[]' > "$RUNNER_TEMP/trusted.args"
+      # Use the same phase, profiles, and settings.xml in both Maven runs.
+      - name: Fetch the build plugins
+        run: mvn --batch-mode -Dmaven.repo.local="$RUNNER_TEMP/plugins" -DskipTests package
+      - name: Build offline
+        run: |
+          mapfile -t trusted < "$RUNNER_TEMP/trusted.args"
+          mvn --batch-mode --offline clean verify "${trusted[@]}" \
+            -Dmaven.repo.local="$RUNNER_TEMP/deps" -Dmaven.repo.local.tail="$RUNNER_TEMP/plugins"

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "postUpgradeTasks": {
+    "commands": ["raeva sync --platforms linux-x86_64,macos-aarch64,windows-x86_64"],
+    "fileFilters": ["raeva.lock"],
+    "executionMode": "branch"
+  }
+}

@@ -1,4 +1,6 @@
-# .github/workflows/ci.yml: check raeva.lock, then build with Maven.
+# .github/workflows/ci.yml: your Maven build as it is, plus a job that
+# checks raeva.lock. Nothing in the build changes; add enforce.yml later to
+# build from the locked artifacts.
 name: CI
 
 on:
@@ -16,19 +18,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # Set up the JDK first. raeva reads JAVA_HOME, and a lock whose POMs
-      # test the JDK version passes --frozen only on a JDK with the same
-      # outcome.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "21"
+          cache: maven
+      - run: mvn --batch-mode verify
 
+  raeva:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # raeva reads JAVA_HOME. A POM profile that tests the JDK version gives
+      # the same lock only on a JDK with the same outcome.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Fails when raeva.lock no longer matches the POMs. On a pull request,
+      # the job summary lists what the pull request changes in the lock.
       - uses: raeva-io/setup-raeva@v1.0.0
         with:
           version: 0.5.0
           check: true
-
-      - run: raeva export-m2
-      - run: mvn --batch-mode verify
+          # One Linux job checks every platform the lock records.
+          platforms: linux-x86_64,macos-aarch64,windows-x86_64

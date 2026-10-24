@@ -1,0 +1,47 @@
+# .github/workflows/raeva-drift.yml: ask what a refresh would change. The
+# job resolves again with `raeva sync --update`, as `mvn -U` does, in its
+# own checkout, and fails when the result differs from the committed lock:
+# a new SNAPSHOT build, a new version in a range, or a republished POM.
+#
+# An online `sync --frozen` on a fresh checkout is not this check. It
+# measures SNAPSHOT update policies from the lock file's modification time,
+# which a checkout resets.
+name: Dependency drift
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: raeva-io/setup-raeva@v1.0.0
+        with:
+          version: 0.5.0
+          cache: false
+      - name: Resolve again and compare
+        run: |
+          committed="$RUNNER_TEMP/committed.lock"
+          cp raeva.lock "$committed"
+          platforms=$(raeva --json lock info | jq -r '[.data.platforms[].platform] | join(",")')
+          raeva sync --update --platforms "$platforms"
+          raeva --json lock diff "$committed" raeva.lock > "$RUNNER_TEMP/drift.json"
+          {
+            echo '### Dependency drift'
+            echo '````text'
+            raeva lock diff "$committed" raeva.lock
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -e '.data.changed == false' "$RUNNER_TEMP/drift.json" > /dev/null

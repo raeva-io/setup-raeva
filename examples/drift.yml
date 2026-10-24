@@ -43,5 +43,5 @@ jobs:
             echo '````text'
             raeva lock diff "$committed" raeva.lock
             echo '````'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           jq -e '.data.changed == false' "$RUNNER_TEMP/drift.json" > /dev/null

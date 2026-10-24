@@ -32,11 +32,19 @@ jobs:
         run: |
           raeva export-m2 --m2-path "$RUNNER_TEMP/deps"
           raeva --json export-checksums | jq -r '.data.maven_properties[]' > "$RUNNER_TEMP/trusted.args"
-      # Use the same phase, profiles, and settings.xml in both Maven runs.
+      # The plugins Maven needs depend on the goals, so both runs use the
+      # same goals, profiles, and settings.xml. The cache holds the plugins
+      # until a POM changes.
+      - id: plugins
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/plugins
+          key: maven-plugins-${{ runner.os }}-${{ hashFiles('**/pom.xml', '.mvn/maven.config', '.mvn/extensions.xml') }}
       - name: Fetch the build plugins
-        run: mvn --batch-mode -Dmaven.repo.local="$RUNNER_TEMP/plugins" -DskipTests package
+        if: steps.plugins.outputs.cache-hit != 'true'
+        run: mvn --batch-mode -Dmaven.repo.local="$RUNNER_TEMP/plugins" verify
       - name: Build offline
         run: |
           mapfile -t trusted < "$RUNNER_TEMP/trusted.args"
-          mvn --batch-mode --offline clean verify "${trusted[@]}" \
+          mvn --batch-mode --offline verify "${trusted[@]}" \
             -Dmaven.repo.local="$RUNNER_TEMP/deps" -Dmaven.repo.local.tail="$RUNNER_TEMP/plugins"

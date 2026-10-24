@@ -56,22 +56,25 @@ hint_for() {
   esac
 }
 
-# Repeats the envelope's warnings as annotations, at most 20 of them.
+# One annotation per warning code, as raeva's own text summary prints them:
+# the first warning with its context, and how many more share the code.
 warnings() {
   command -v jq >/dev/null || return 0
   local lines
-  lines=$(jq -r '.data.warnings[]? | "\(.code)\t\(.message)"' "$1" 2>/dev/null) || return 0
+  lines=$(jq -r --arg cmd "$2" '
+    [.data.warnings[]?] | group_by(.code)[]
+    | (.[0].context | if type == "object" and length > 0
+        then " (" + ([to_entries[] | "\(.key)=\(.value)"] | join(", ")) + ")" else "" end) as $ctx
+    | "\(.[0].code)\t\(.[0].message)\($ctx)"
+      + (if length > 1 then "; and \(length - 1) more (raeva --json \($cmd) lists them)" else "" end)
+    ' "$1" 2>/dev/null) || return 0
   [[ -n "$lines" ]] || return 0
-  local n=0 total wcode msg
-  total=$(printf '%s\n' "$lines" | wc -l)
+  local wcode msg
   while IFS=$'\t' read -r wcode msg; do
-    n=$((n + 1))
-    [[ $n -le 20 ]] || break
     echo "::warning title=$(esc_prop "raeva $wcode")::$(esc_msg "$msg")"
   done <<< "$lines"
-  [[ $total -le 20 ]] || echo "::warning title=raeva::$((total - 20)) more warnings; 'raeva --json $2' lists them"
   printf '\nWarnings:\n' >> "$summary"
-  fenced "$(printf '%s\n' "$lines" | head -n 20 | tr '\t' ' ')"
+  fenced "$(printf '%s\n' "$lines" | tr '\t' ' ')"
 }
 
 frozen() {

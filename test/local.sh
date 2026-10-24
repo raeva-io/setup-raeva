@@ -64,7 +64,7 @@ cat > "$stub" <<'EOF'
 #!/usr/bin/env bash
 case " $* " in
   *" sync --frozen "*)
-    printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":null}]}}'
+    printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null}]}}'
     exit 7 ;;
   *" vuln "*)
     [[ -n "${STUB_NO_SARIF:-}" ]] && { echo "error: no lock" >&2; exit 3; }
@@ -231,7 +231,8 @@ for i in "${!install_variants[@]}"; do
   log="$scratch/run-$tag-stub-frozen/log"
   has "$log" "Run raeva sync --platforms linux-x86_64 and commit raeva.lock" && ok "$tag: annotation keeps the CLI hint" || bad "$tag: annotation keeps the CLI hint"
   has "$log" "See the error codes" && bad "$tag: no generic hint when the CLI gave one" || ok "$tag: no generic hint when the CLI gave one"
-  has "$log" "^::warning title=raeva AUTH_FALLBACK::central refused" && ok "$tag: warning annotation" || bad "$tag: warning annotation"
+  has "$log" "^::warning title=raeva AUTH_FALLBACK::central refused, mirror served (url=https://mirror.example/); and 1 more" && ok "$tag: one warning annotation per code" || bad "$tag: one warning annotation per code"
+  [[ $(grep -c "^::warning title=raeva AUTH_FALLBACK" "$log") -eq 1 ]] && ok "$tag: no repeated warning annotation" || bad "$tag: no repeated warning annotation"
   has "$scratch/run-$tag-stub-frozen/summary" "gson  2.13.2 -> 2.13.1" && ok "$tag: summary lists the change" || bad "$tag: summary lists the change"
   has "$scratch/run-$tag-stub-frozen/summary" "''''" && ok "$tag: summary fence cannot be closed" || bad "$tag: summary fence cannot be closed"
 

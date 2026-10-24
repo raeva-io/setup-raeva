@@ -48,18 +48,25 @@ function Fenced([string]$Text) {
     Summary "`n````text`n$($Text.Replace('````', "''''"))`n````"
 }
 
-# Repeats the envelope's warnings as annotations, at most 20 of them.
+# One annotation per warning code, as raeva's own text summary prints them:
+# the first warning with its context, and how many more share the code.
 function Write-Warnings($Envelope, [string]$Command) {
     if (-not $Envelope -or -not $Envelope.PSObject.Properties['data'] -or -not $Envelope.data -or
         -not $Envelope.data.PSObject.Properties['warnings']) { return }
     $all = @($Envelope.data.warnings)
     if ($all.Count -eq 0) { return }
     $lines = @()
-    foreach ($w in ($all | Select-Object -First 20)) {
-        Write-Output "::warning title=$(EscProp "raeva $($w.code)")::$(EscMsg "$($w.message)")"
-        $lines += "$($w.code) $($w.message)"
+    foreach ($group in ($all | Group-Object -Property code -CaseSensitive | Sort-Object -Property Name -CaseSensitive)) {
+        $first = $group.Group[0]
+        $text = "$($first.message)"
+        if ($first.context -and $first.context -is [psobject]) {
+            $pairs = @($first.context.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" })
+            if ($pairs.Count -gt 0) { $text += " ($($pairs -join ', '))" }
+        }
+        if ($group.Count -gt 1) { $text += "; and $($group.Count - 1) more (raeva --json $Command lists them)" }
+        Write-Output "::warning title=$(EscProp "raeva $($group.Name)")::$(EscMsg $text)"
+        $lines += "$($group.Name) $text"
     }
-    if ($all.Count -gt 20) { Write-Output "::warning title=raeva::$($all.Count - 20) more warnings; 'raeva --json $Command' lists them" }
     Summary "`nWarnings:"
     Fenced ($lines -join "`n")
 }

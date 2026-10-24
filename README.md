@@ -47,7 +47,7 @@ one refuses.
 | File | What it does |
 | --- | --- |
 | `examples/ci.yml` | The check next to an unchanged Maven build. |
-| `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`. |
+| `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for POMs with exact versions. |
 | `examples/relock.yml` | Writes `raeva.lock` again on Dependabot and Renovate pull requests and pushes it to the PR branch. |
 | `examples/drift.yml` | A scheduled job that resolves again and fails when the result differs from the committed lock. |
 | `examples/private.yml` | A public repository whose build reads a private Maven repository, with a credential-free job for fork pull requests. |

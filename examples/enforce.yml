@@ -2,6 +2,13 @@
 # only. raeva.lock holds no build plugins, so one online Maven run fills a
 # separate local repository with them, and the offline build reads it as a
 # tail. Maven Trusted Checksums fail any file whose bytes differ from its pin.
+#
+# For POMs with exact versions. Trusted Checksums accept a file without a
+# pin, as plugins need, so with a version range or a SNAPSHOT the online run
+# on a plugin-cache miss can select a version newer than the lock, run it,
+# and leave it in the plugins repository for the offline build. Run
+# drift.yml, which fails when such a version appears, or keep ranges and
+# SNAPSHOTs out of the POMs this recipe builds.
 name: Locked build
 
 on:

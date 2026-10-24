@@ -47,7 +47,7 @@ one refuses.
 | File | What it does |
 | --- | --- |
 | `examples/ci.yml` | The check next to an unchanged Maven build. |
-| `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for POMs with exact versions. |
+| `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for a dependency graph without version ranges or SNAPSHOTs, transitive ones included. |
 | `examples/relock.yml` | Writes `raeva.lock` again on Dependabot and Renovate pull requests and pushes it to the PR branch. |
 | `examples/drift.yml` | A scheduled job that resolves again and fails when the result differs from the committed lock. |
 | `examples/private.yml` | A public repository whose build reads a private Maven repository, with a credential-free job for fork pull requests. |
@@ -87,7 +87,10 @@ secret `RELOCK_APP_PRIVATE_KEY` (a Dependabot secret too, since Dependabot
 runs see only Dependabot secrets), and the push job uses it.
 
 Hosted Renovate (the Mend app) cannot run raeva, so use `relock.yml` there
-too. A self-hosted Renovate can write the lock itself with
+too. Renovate stops rebasing a branch that has another author's commit, so
+add the lock commit's author, which `relock.yml` sets with either token, to
+`gitIgnoredAuthors` in `renovate.json`:
+`["41898282+github-actions[bot]@users.noreply.github.com"]`. A self-hosted Renovate can write the lock itself with
 `postUpgradeTasks`, as in `examples/renovate-self-hosted.json`; its admin must
 install raeva on the Renovate host and allow the command in the global
 `allowedCommands`, such as `["^raeva sync --platforms [a-z0-9_,-]+$"]`.

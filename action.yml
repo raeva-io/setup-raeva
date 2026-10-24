@@ -42,6 +42,21 @@ inputs:
       Platforms for the frozen check, comma separated (linux-x86_64,
       macos-aarch64). Empty checks the runner's own platform.
     default: ""
+  settings:
+    description: >-
+      A Maven settings file for raeva to read in place of ~/.m2/settings.xml,
+      relative to the workspace, passed as -s, as for mvn -s.
+    default: ""
+  profiles:
+    description: >-
+      Maven profile ids to activate, comma separated, with !id to deactivate
+      one, passed as -P, as for mvn -P.
+    default: ""
+  properties:
+    description: >-
+      Maven user properties, one name=value per line, each passed as -D, as
+      for mvn -D. Whitespace around a line is dropped.
+    default: ""
   relock:
     description: >-
       Run `raeva sync` for every platform the lock records (or the platforms
@@ -180,6 +195,9 @@ runs:
         RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_SETTINGS: ${{ inputs.settings }}
+        INPUT_PROFILES: ${{ inputs.profiles }}
+        INPUT_PROPERTIES: ${{ inputs.properties }}
 
     - id: scan-unix
       if: runner.os != 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true' || inputs.lock-diff == 'only')
@@ -195,6 +213,9 @@ runs:
         INPUT_VEX: ${{ inputs.vex }}
         INPUT_SARIF_CATEGORY: ${{ inputs.sarif-category }}
         INPUT_LOCK_DIFF: ${{ inputs.lock-diff }}
+        INPUT_SETTINGS: ${{ inputs.settings }}
+        INPUT_PROFILES: ${{ inputs.profiles }}
+        INPUT_PROPERTIES: ${{ inputs.properties }}
         GH_TOKEN: ${{ inputs.token }}
 
     - id: scan-windows
@@ -210,6 +231,9 @@ runs:
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
         INPUT_VEX: ${{ inputs.vex }}
         INPUT_SARIF_CATEGORY: ${{ inputs.sarif-category }}
+        INPUT_SETTINGS: ${{ inputs.settings }}
+        INPUT_PROFILES: ${{ inputs.profiles }}
+        INPUT_PROPERTIES: ${{ inputs.properties }}
 
     # A push by Dependabot runs with a read-only token and the upload is
     # refused, so a failed upload warns instead of failing the job.

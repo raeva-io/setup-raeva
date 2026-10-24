@@ -18,6 +18,19 @@ token="${GH_TOKEN:-}"
 unset GH_TOKEN
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
 
+# The Maven options of every command that reads the configuration: -s, -P,
+# and one -D per line of the properties input. The --name=value forms keep a
+# value that starts with - or ! one argument.
+maven=()
+[[ -z "${INPUT_SETTINGS:-}" ]] || maven+=("--settings=$INPUT_SETTINGS")
+[[ -z "${INPUT_PROFILES:-}" ]] || maven+=("--activate-profiles=$INPUT_PROFILES")
+while IFS= read -r line; do
+  line="${line%$'\r'}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -z "$line" ]] || maven+=("--define=$line")
+done <<< "${INPUT_PROPERTIES:-}"
+
 # Workflow commands need %, CR, and LF escaped in messages, and also : and ,
 # in properties such as title.
 esc_msg() { local s="${1//%/%25}"; s="${s//$'\r'/%0D}"; printf '%s' "${s//$'\n'/%0A}"; }
@@ -81,7 +94,7 @@ warnings() {
 }
 
 frozen() {
-  local args=(--json -C "$workdir" sync --frozen)
+  local args=(--json -C "$workdir" sync --frozen ${maven[@]+"${maven[@]}"})
   [[ -z "${INPUT_PLATFORMS:-}" ]] || args+=(--platforms "$INPUT_PLATFORMS")
   local json="$tmp/raeva-frozen.json" code=0
   "$raeva" "${args[@]}" > "$json" || code=$?
@@ -135,7 +148,7 @@ vuln() {
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" ]] || vex+=(--vex "$line")
   done <<< "${INPUT_VEX:-}"
-  "$raeva" -C "$workdir" vuln --format sarif --fail-on "$rv_fail_on" ${vex[@]+"${vex[@]}"} > "$sarif" 2> "$errlog" || code=$?
+  "$raeva" -C "$workdir" vuln --format sarif --fail-on "$rv_fail_on" ${vex[@]+"${vex[@]}"} ${maven[@]+"${maven[@]}"} > "$sarif" 2> "$errlog" || code=$?
   cat "$errlog" >&2
   out vuln-exit-code "$code"
   # An incomplete scan (exit 2 or more) still writes the findings it has, so
@@ -251,13 +264,13 @@ relock() {
       [[ -n "$platforms" ]] || echo "::warning title=setup-raeva::raeva.lock names no platform, so only this runner's is locked; set the platforms input to keep others"
     fi
   fi
-  local args=(-C "$workdir" sync)
+  local args=(-C "$workdir" sync ${maven[@]+"${maven[@]}"})
   [[ -z "$platforms" ]] || args+=(--platforms "$platforms")
   echo "raeva ${args[*]}"
   "$raeva" "${args[@]}"
   # Keep Maven Trusted Checksums in step when the project commits them.
   if [[ -f "$workdir/.mvn/checksums/checksums.sha256" ]]; then
-    "$raeva" -C "$workdir" export-checksums
+    "$raeva" -C "$workdir" export-checksums ${maven[@]+"${maven[@]}"}
   fi
   out relocked-platforms "$platforms"
   if [[ -f "$before" ]] && ! cmp -s "$before" "$lock"; then

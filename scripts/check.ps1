@@ -17,6 +17,17 @@ function Out([string]$Name, [string]$Value) {
 function Summary([string]$Text) {
     if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $Text -Encoding utf8 }
 }
+# The Maven options of every command that reads the configuration: -s, -P,
+# and one -D per line of the properties input. The --name=value forms keep a
+# value that starts with - or ! one argument.
+$maven = @()
+if ($env:INPUT_SETTINGS) { $maven += "--settings=$env:INPUT_SETTINGS" }
+if ($env:INPUT_PROFILES) { $maven += "--activate-profiles=$env:INPUT_PROFILES" }
+foreach ($line in "$env:INPUT_PROPERTIES" -split "`n") {
+    $property = $line.Trim()
+    if ($property) { $maven += "--define=$property" }
+}
+
 # Workflow commands need %, CR, and LF escaped in messages, and also : and ,
 # in properties such as title.
 function EscMsg([string]$s) { $s.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A') }
@@ -88,7 +99,7 @@ function Write-Warnings($Envelope, [string]$Command) {
 }
 
 function Invoke-Frozen {
-    $arguments = @('--json', '-C', $workdir, 'sync', '--frozen')
+    $arguments = @('--json', '-C', $workdir, 'sync', '--frozen') + $maven
     if ($env:INPUT_PLATFORMS) { $arguments += @('--platforms', $env:INPUT_PLATFORMS) }
     $json = Join-Path $tmp 'raeva-frozen.json'
     $err = Join-Path $tmp 'raeva-frozen.err'
@@ -140,6 +151,7 @@ function Invoke-Vuln {
         $path = $line.Trim()
         if ($path) { $arguments += @('--vex', $path) }
     }
+    $arguments += $maven
     $code = Invoke-Raeva $arguments $sarif $err
     Get-Content -LiteralPath $err | Write-Host
     Out 'vuln-exit-code' $code

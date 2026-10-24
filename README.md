@@ -181,6 +181,9 @@ shell installer skips the check when `sha256sum` is missing.
 | `working-directory` | `.` | The directory with the root `pom.xml` and `raeva.lock`. |
 | `check` | `false` | Run `raeva sync --frozen`. |
 | `platforms` | empty | Platforms for `check` and `relock`, such as `linux-x86_64,macos-aarch64`. Empty means the runner's platform for `check` and every recorded platform for `relock`. |
+| `settings` | empty | A Maven settings file, relative to the workspace, that `check`, `vuln` and `relock` read in place of `~/.m2/settings.xml`, passed as `-s`. |
+| `profiles` | empty | Maven profile ids, comma separated (`ci,!slow`), passed as `-P`. |
+| `properties` | empty | Maven user properties, one `name=value` per line, each passed as `-D`. |
 | `lock-diff` | `true` | With `check`, write the pull request's lock diff to the job summary. `only` writes the diff and skips `check` and `vuln`. |
 | `relock` | `false` | Run `raeva sync` for every recorded platform. Linux and macOS only. |
 | `vuln` | `false` | Run `raeva vuln --format sarif`. |

@@ -58,12 +58,12 @@ output_of() { sed -n "s/^$2=//p" "$scratch/run-$1/output" | head -n 1; }
 
 # A stand-in for raeva that prints fixed answers: a frozen failure with hints
 # and a warning, an incomplete scan with a partial SARIF log, and a long lock
-# diff. With STUB_ARGS it records its arguments and whether it saw GH_TOKEN.
+# diff. With STUB_ARGS it appends its arguments and whether it saw GH_TOKEN.
 stub="$scratch/stub/raeva"
 mkdir -p "$scratch/stub"
 cat > "$stub" <<'EOF'
 #!/usr/bin/env bash
-[[ -z "${STUB_ARGS:-}" ]] || { printf '%s\n' "$@" "GH_TOKEN=${GH_TOKEN-unset}" > "$STUB_ARGS"; }
+[[ -z "${STUB_ARGS:-}" ]] || { printf '%s\n' "$@" "GH_TOKEN=${GH_TOKEN-unset}" >> "$STUB_ARGS"; }
 case " $* " in
   *" sync --frozen "*)
     printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null}]}}'
@@ -261,6 +261,34 @@ for i in "${!install_variants[@]}"; do
     && ok "$tag: working directory passed as one argument" || bad "$tag: working directory passed as one argument"
   has "$scratch/args-$tag" '^GH_TOKEN=unset$' && ok "$tag: raeva does not see the token" || bad "$tag: raeva does not see the token"
 
+  # The settings, profiles and properties inputs reach the frozen check and
+  # the scan as one Maven option each, a value starting with ! included.
+  maven_args='|--settings=ci settings.xml|--activate-profiles=!slow,ci|--define=a=1|--define=b=two words|'
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-maven" env RAEVA_BIN="$stub" STUB_ARGS="$scratch/maven-args-$tag" \
+    INPUT_CHECK=true INPUT_LOCK_DIFF=false INPUT_SETTINGS='ci settings.xml' INPUT_PROFILES='!slow,ci' \
+    INPUT_PROPERTIES=$' a=1\r\n\nb=two words \n' $chk scan
+  [[ "$(tr '\n' '|' < "$scratch/maven-args-$tag")" == *"|sync|--frozen$maven_args"* ]] \
+    && ok "$tag: Maven options reach the frozen check" || bad "$tag: Maven options reach the frozen check ($(tr '\n' '|' < "$scratch/maven-args-$tag"))"
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-maven-vuln" env RAEVA_BIN="$stub" STUB_ARGS="$scratch/maven-vuln-$tag" INPUT_VULN=true \
+    INPUT_SETTINGS='ci settings.xml' INPUT_PROFILES='!slow,ci' INPUT_PROPERTIES=$'a=1\nb=two words' $chk scan
+  [[ "$(tr '\n' '|' < "$scratch/maven-vuln-$tag")" == *"$maven_args"* ]] \
+    && ok "$tag: Maven options reach the scan" || bad "$tag: Maven options reach the scan"
+  # A raeva that takes them checks the lock against them.
+  if "$raeva" --help | grep -q -- --activate-profiles; then
+    # shellcheck disable=SC2086
+    run_env "$tag-frozen-define" env RAEVA_BIN="$raeva" INPUT_CHECK=true INPUT_LOCK_DIFF=false \
+      INPUT_PROPERTIES=setup.raeva.test=1 INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
+    expect "$tag: frozen check fails with 7 on a new -D" 7 $?
+    # shellcheck disable=SC2086
+    run_env "$tag-frozen-nosettings" env RAEVA_BIN="$raeva" INPUT_CHECK=true INPUT_LOCK_DIFF=false \
+      INPUT_SETTINGS="$scratch/no-such-settings.xml" INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
+    expect "$tag: frozen check fails with 3 on a missing settings file" 3 $?
+    has "$scratch/run-$tag-frozen-nosettings/log" "settings file does not exist" \
+      && ok "$tag: names the missing settings file" || bad "$tag: names the missing settings file"
+  fi
+
   # An incomplete scan keeps its partial SARIF log, under a category per root.
   # shellcheck disable=SC2086
   run_env "$tag-stub-vuln" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_WORKING_DIRECTORY=sub/dir $chk scan
@@ -296,6 +324,13 @@ printf 'platform = "linux-x86_64"\n' > "$relock_dir/raeva.lock"
 run_env relock-long env RAEVA_BIN="$stub" INPUT_WORKING_DIRECTORY="$relock_dir" bash "$here/scripts/check.sh" relock
 expect "bash: relock with a long lock diff succeeds" 0 $?
 has "$scratch/run-relock-long/summary" "49800 more lines" && ok "bash: long lock diff cut to 200 lines" || bad "bash: long lock diff cut to 200 lines"
+
+# A relock passes the Maven options to raeva sync.
+printf 'platform = "linux-x86_64"\n' > "$relock_dir/raeva.lock"
+run_env relock-maven env RAEVA_BIN="$stub" STUB_ARGS="$scratch/relock-args" INPUT_WORKING_DIRECTORY="$relock_dir" \
+  INPUT_PROFILES=ci INPUT_PROPERTIES=a=1 bash "$here/scripts/check.sh" relock
+[[ "$(tr '\n' '|' < "$scratch/relock-args")" == *"|sync|--activate-profiles=ci|--define=a=1|--platforms|linux-x86_64|"* ]] \
+  && ok "bash: Maven options reach the relock" || bad "bash: Maven options reach the relock ($(tr '\n' '|' < "$scratch/relock-args"))"
 
 # The real release, with its build attestation and the pinned checksums.
 if [[ -n "${GH_TOKEN:-}" && -n "${RELEASE_VERSION:-}" ]]; then

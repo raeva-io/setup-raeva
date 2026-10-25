@@ -9,35 +9,41 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 jobs:
-  raeva:
+  build:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    env:
+      REPO_USER: ${{ secrets.REPO_USER }}
+      REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Writes ~/.m2/settings.xml with a <server> for the repository id that
-      # reads the credentials from these variables.
+      # Writes $RUNNER_TEMP/settings.xml with a <server> for the repository
+      # id that reads the credentials from REPO_USER and REPO_TOKEN, and
+      # leaves ~/.m2/settings.xml as it is.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
           server-id: company-releases
-          server-username: REPO_USER
-          server-password: REPO_TOKEN
+          server-username-env-var: REPO_USER
+          server-password-env-var: REPO_TOKEN
+          settings-path: ${{ runner.temp }}
       - uses: raeva-io/setup-raeva@v1.0.0
-        env:
-          REPO_USER: ${{ secrets.REPO_USER }}
-          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         with:
           version: 0.5.0
           check: true
           cache: false
+          settings: ${{ runner.temp }}/settings.xml
+      - run: mvn --batch-mode -s "$RUNNER_TEMP/settings.xml" verify
 
   fork:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository

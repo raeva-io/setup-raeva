@@ -1,5 +1,9 @@
-# .github/workflows/raeva-vuln.yml: scan raeva.lock against OSV and upload
-# the findings to code scanning.
+# .github/workflows/raeva-vuln.yml: scan raeva.lock against OSV, list the
+# findings in the job summary, and upload them to code scanning.
+#
+# Pull requests only report: an advisory published today would otherwise fail
+# every open pull request, whatever it changes. Pushes to main and the
+# weekly run fail on findings at high or above.
 name: Vulnerabilities
 
 on:
@@ -17,7 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       # upload-sarif reads the workflow run; a private repository refuses
-      # that without actions: read.
+      # that without actions: read. A private repository without GitHub
+      # Code Security refuses the upload: set sarif-upload: false there, or
+      # the action skips it with a notice.
       actions: read
       contents: read
       security-events: write
@@ -28,13 +34,12 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@v1.0.0
         with:
           version: 0.5.0
-          check: true
           vuln: true
-          vuln-fail-on: high
+          vuln-fail-on: ${{ github.event_name == 'pull_request' && 'never' || 'high' }}
           # A scheduled run starts from an empty store and metadata cache, so
           # it also sees a POM that was republished upstream.
           cache: ${{ github.event_name != 'schedule' }}

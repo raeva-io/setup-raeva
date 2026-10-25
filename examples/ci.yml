@@ -7,6 +7,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A required check must also run in a merge queue.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -31,17 +34,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # raeva reads JAVA_HOME. A POM profile that tests the JDK version gives
-      # the same lock only on a JDK with the same outcome.
+      # raeva evaluates POM profiles with this JDK, so a profile that tests
+      # the JDK version gives the same lock only on a JDK the lock covers.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
-      # Fails when raeva.lock no longer matches the POMs. On a pull request,
-      # the job summary lists what the pull request changes in the lock.
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
+      # Fails when raeva.lock no longer matches the POMs, for every platform
+      # the lock records. On a pull request, the job summary lists what the
+      # pull request changes in the lock.
       - uses: raeva-io/setup-raeva@v1.0.0
         with:
           version: 0.5.0
           check: true
-          # One Linux job checks every platform the lock records.
-          platforms: linux-x86_64,macos-aarch64,windows-x86_64

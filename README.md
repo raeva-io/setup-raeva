@@ -8,31 +8,59 @@ vulnerabilities.
 
 ## Quick start
 
-Keep your Maven build as it is and add one job that checks the lock
-(`examples/ci.yml`):
+Keep your Maven build as it is and add a workflow that checks the lock
+(`examples/ci.yml` has both jobs):
 
 ```yaml
-raeva:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        persist-credentials: false
-    - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-      with:
-        distribution: temurin
-        java-version: "21"
-    - uses: raeva-io/setup-raeva@v1.0.0
-      with:
-        version: 0.5.0
-        check: true
-        platforms: linux-x86_64,macos-aarch64,windows-x86_64
+name: raeva
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
+      - uses: raeva-io/setup-raeva@v1.0.0
+        with:
+          version: 0.5.0
+          check: true
 ```
 
-The job runs `raeva sync --frozen` on a cold runner: it downloads the locked
-artifacts into the store and fails when `raeva.lock` no longer matches the
-POMs. On a pull request, the job summary lists what the pull request changes
-in the lock. One Linux job can check every platform the lock records.
+The job runs `raeva sync --frozen`: it downloads the locked artifacts into
+the store and fails when `raeva.lock` no longer matches the POMs. It checks
+every platform the lock records, whatever the runner's OS, so one Linux job
+checks a lock written on a Mac. On a pull request, the job summary lists what
+the pull request changes in the lock. The `merge_group` trigger lets the
+check run in a merge queue. Leave the check optional until bot pull requests
+get their lock commits (see "Bot pull requests"), then make it required.
+
+Locally, write the lock and tell git how to merge it:
+
+```sh
+raeva sync
+printf 'raeva.lock -merge linguist-generated=true\n' >> .gitattributes
+git add raeva.lock .gitattributes
+```
+
+With `-merge`, git keeps your side of a conflicted `raeva.lock` without
+conflict markers and still reports the conflict: fix the POMs, run
+`raeva sync`, and `git add raeva.lock`. `linguist-generated` folds the lock
+in pull request diffs; the job summary has the readable diff.
 
 Releases of this action are immutable, so `@v1.0.0` always names the same
 commit; `@<commit SHA> # v1.0.0` pins it by SHA. Dependabot and Renovate update
@@ -44,96 +72,157 @@ one refuses.
 
 ## Recipes
 
+Add them one at a time, after the check works.
+
 | File | What it does |
 | --- | --- |
 | `examples/ci.yml` | The check next to an unchanged Maven build. |
-| `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for a dependency graph without version ranges or SNAPSHOTs, transitive ones included. |
-| `examples/relock.yml` | Writes `raeva.lock` again on Dependabot and Renovate pull requests and pushes it to the PR branch. |
-| `examples/drift.yml` | A scheduled job that resolves again and fails when the result differs from the committed lock. |
+| `examples/vuln.yml` | Scans the lock. Pull requests get a report; a weekly run and pushes to main fail on findings at `high` or above. |
+| `examples/drift.yml` | For SNAPSHOT or version range dependencies only: a scheduled job that resolves again and fails when the result differs from the committed lock. |
+| `examples/relock.yml` | Writes `raeva.lock` again on Dependabot pull requests and pushes it to the PR branch. |
 | `examples/private.yml` | A public repository whose build reads a private Maven repository, with a credential-free job for fork pull requests. |
-| `examples/vuln.yml` | Scans the lock and uploads the findings to code scanning. |
+| `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for a dependency graph without version ranges or SNAPSHOTs, transitive ones included. |
 | `examples/renovate-self-hosted.json` | `postUpgradeTasks` for a self-hosted Renovate. |
-| `examples/gitlab-ci.yml` | The same check on GitLab CI. |
+| `examples/gitlab-ci.yml`, `examples/Jenkinsfile` | The same check on GitLab CI and Jenkins. |
 
 ## What fails the check
 
 `raeva sync --frozen` fails with exit 7 (`LOCKFILE_MISMATCH`) when resolving
-again changes the lock: a dependency, a SNAPSHOT build, a POM pin, a module's
-coordinates (a project version bump, so a release commit needs `raeva sync`
-too), or the active profiles. The error annotation lists the changes and
-raeva's own hint. A POM edit that resolves to the same lock passes. A broken
-or conflicted lock fails with exit 3 (`LOCKFILE_INVALID`).
+again changes the lock: a dependency, a POM pin, a parent or BOM, the module
+set, the active profiles, or the `-D` and `-P` options. The error annotation
+lists the changes and raeva's hint. A POM edit that resolves to the same lock
+passes, and so does a version bump of the reactor's own modules, such as a
+`mvn versions:set` or release commit, when nothing else changes. A broken or
+conflicted lock fails with exit 3 (`LOCKFILE_INVALID`), and a platform the
+`platforms` input names but the lock lacks fails with exit 3
+(`PLATFORM_MISSING`).
 
-raeva evaluates POM profiles with the runner's `JAVA_HOME`. A profile that
-tests the JDK version gives the same lock only on a JDK with the same
-outcome, so run the check on the JDK the lock was written with; other legs
-of a JDK matrix build without it.
+raeva evaluates POM profiles with the runner's JDK. When a profile activates
+by JDK version and CI builds on several JDKs, list them in `raeva.toml` and
+run `raeva sync`:
+
+```toml
+[lock]
+jdks = ["17", "21"]
+```
+
+The lock then holds one result per JDK, and the check passes on any JDK the
+list names. Without `jdks`, run the check on the JDK the lock was written
+with. Set `JAVA_HOME` locally too: without it, raeva assumes Java 17.
 
 ## Bot pull requests
 
-`examples/relock.yml` runs `raeva sync` on a bot's pull request and pushes
-the new lock as a second commit, `Update raeva.lock [dependabot skip]`. The
-`[dependabot skip]` marker lets Dependabot keep rebasing its branch: when the
+A dependency bot changes a POM but not `raeva.lock`, so the check fails on its
+pull request. The job summary then also shows the proposed lock, the diff
+that `raeva sync` would write, with the command that fixes it. raeva writes
+it in a copy that is removed afterwards: the check still fails, and later
+steps see the committed lock. Linux and macOS runners.
+
+There are three ways to get the lock commit:
+
+- **Tier 1: `examples/relock.yml` with an App token or a fine-grained
+  token.** The workflow writes the lock and pushes it as a second commit,
+  `Update raeva.lock [dependabot skip]`, and CI runs on it at once. This is
+  the only unattended setup, and it is for Dependabot. Create a GitHub App
+  with Contents read and write, install it on the repository, and store its
+  client ID as the variable `RELOCK_APP_CLIENT_ID` and its private key as the
+  secret `RELOCK_APP_PRIVATE_KEY`. A fine-grained token with Contents read and
+  write on the repository, stored as the secret `RELOCK_TOKEN`, works too.
+  Dependabot runs see only Dependabot secrets, so store the secret there as
+  well.
+- **Tier 2: `examples/relock.yml` with the default token.** The lock commit
+  arrives by itself, but GitHub starts no workflow for a push with
+  `GITHUB_TOKEN` without approval: the CI runs of the lock commit wait as
+  `action_required` until someone with write access clicks "Approve and run".
+  That happens once per relock, and again after each Dependabot rebase.
+- **Tier 3: no relock workflow.** A maintainer checks out the branch, runs
+  `raeva sync`, and pushes `raeva.lock`.
+
+`[dependabot skip]` lets Dependabot keep rebasing its branch: when the
 branch conflicts after another pull request merged, Dependabot rebases its own
 commit, drops the lock commit, and the workflow writes the lock again.
 
-A push made with the default `GITHUB_TOKEN` starts no `push` workflow, and
-the `pull_request` runs of the new commit wait as `action_required` until
-someone with write access approves them, so a required check stays pending
-until then. With a GitHub App token the runs
-start at once. Create an App with `contents: write` on the repository, store
-its client ID as the variable `RELOCK_APP_CLIENT_ID` and its key as the
-secret `RELOCK_APP_PRIVATE_KEY` (a Dependabot secret too, since Dependabot
-runs see only Dependabot secrets), and the push job uses it.
+Hosted Renovate (the Mend app) stays at Tier 3 for now. It stops rebasing a
+branch that has another author's commit. Its `gitIgnoredAuthors` setting with
+the lock commit's author,
+`["41898282+github-actions[bot]@users.noreply.github.com"]`, should let it
+keep rebasing, but that is not yet verified through a conflict and a rebase,
+so `relock.yml` runs only for Dependabot. A self-hosted Renovate writes the
+lock itself with `postUpgradeTasks`, as in `examples/renovate-self-hosted.json`;
+its admin installs raeva on the Renovate host and allows the command in the
+global `allowedCommands`, such as `["^raeva sync$"]`.
 
-Hosted Renovate (the Mend app) cannot run raeva, so use `relock.yml` there
-too. Renovate stops rebasing a branch that has another author's commit, so
-add the lock commit's author, which `relock.yml` sets with either token, to
-`gitIgnoredAuthors` in `renovate.json`:
-`["41898282+github-actions[bot]@users.noreply.github.com"]`. A self-hosted Renovate can write the lock itself with
-`postUpgradeTasks`, as in `examples/renovate-self-hosted.json`; its admin must
-install raeva on the Renovate host and allow the command in the global
-`allowedCommands`, such as `["^raeva sync --platforms [a-z0-9_,-]+$"]`.
+The workflow never pushes to main, never uses `pull_request_target`, and has
+no option that lets a stale lock pass.
 
 ## SNAPSHOT dependencies
 
-- The pull request job: an online `check` with `cache: true`. raeva checks a
-  SNAPSHOT by its repository's update policy. With `always`, a new upstream
-  build fails the check of every open pull request until the lock is
-  written again. With `daily` or an interval, the policy is measured from the
-  lock file's modification time, which a fresh checkout resets, so the check
-  passes until `drift.yml` reports the new build.
+- The pull request check restores the pinned SNAPSHOT builds and checks the
+  POMs against the lock. It does not look for newer builds, so a new upstream
+  build does not fail open pull requests.
+- `examples/drift.yml` finds them: it runs `raeva sync --update`, as
+  `mvn -U` does, in its own checkout, and fails when the result differs from
+  the committed lock. It reports a new SNAPSHOT build, a new version in a
+  range, and a republished POM. Add it when the project has SNAPSHOT or range
+  dependencies.
 - Offline: `raeva sync --frozen --offline` checks the lock against the POMs
-  with cached data only. It does not check the store, so follow it with
-  `raeva lock verify --offline` or `raeva export-m2 --offline`, which fail when
-  a locked file is missing. A cache miss then fails the job.
-- Drift: `examples/drift.yml` runs `raeva sync --update` in its own checkout,
-  as `mvn -U` does, and compares the result with `raeva lock diff`. It reports
-  a new SNAPSHOT build, a new version in a range, and a republished POM.
+  with cached data and fails when the store lacks a pinned file. Follow it
+  with `raeva lock verify --offline`, which also hashes every stored file
+  against its pin.
 
 ## Several Maven roots
 
 Use one step, or one matrix leg, per root with `working-directory`. Each
-root has its own `raeva.lock` and cache key. The code scanning category
-defaults to `raeva` for the repository root and `raeva/<working-directory>`
-otherwise, so the alerts of two roots do not replace each other.
+root has its own `raeva.lock`, cache key, lock diff artifact, and SARIF log.
+The code scanning category defaults to `raeva` for the repository root and
+`raeva/<working-directory>` otherwise, so the alerts of two roots do not
+replace each other. In `examples/relock.yml`, list the roots in the
+`root` matrix; one commit carries every changed lock.
 
 ## Private repositories and forks
 
-Give raeva the repository credentials through a `settings.xml` `<server>`
-that reads them with `${env.NAME}`, as `examples/private.yml` does with
-`actions/setup-java`.
+Give raeva the repository credentials through a settings file whose
+`<server>` reads them with `${env.NAME}`, as `examples/private.yml` does with
+`actions/setup-java` (`server-username-env-var` and
+`server-password-env-var`) and the `settings` input.
 
-The store holds every locked jar, private ones included. A pull request
-restores the cache of its base branch, and so does a pull request from a
-fork. In a public repository with private dependencies, set `cache: false`
-on the job that has credentials, or never save a cache there.
+The store holds every locked jar, private ones included. Every run restores
+the default branch's cache, a pull request from a fork too. In a public
+repository with private dependencies, set `cache: false` on the job that has
+credentials, so the default branch never saves one.
 
 A pull request from a fork gets no secrets and a read-only token, even when
 the fork's author is a collaborator, unless the settings of a private
 repository send them. The read-only token can still read the base commit's
 `raeva.lock`, so `lock-diff: only` shows the lock diff in a job without
 credentials.
+
+## Options that change resolution
+
+The `settings`, `profiles` and `properties` inputs pass `-s`, `-P` and `-D`
+to every raeva command, as for `mvn`. Use them only for options that change
+resolution, such as a CI profile or a property that a profile activation or a
+version reads, and pass the same ones to `raeva sync` when you write the lock.
+Every `-D` and `-P` is an input of the lock, so a build flag such as
+`-DskipTests` that the lock was written without fails the check. Keep build
+flags in the Maven step.
+
+## Other CI systems
+
+`examples/gitlab-ci.yml` and `examples/Jenkinsfile` download the release
+archive, check it against a SHA-256 pinned in the file, and run
+`raeva sync --frozen` before an unchanged Maven build. Take the SHA-256 from
+the release's `sha256.sum`:
+
+```sh
+curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.0/sha256.sum \
+  | grep raeva-x86_64-unknown-linux-gnu.tar.gz
+```
+
+Check it against the release's build attestation once, where `gh` is
+installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
+--repo raeva-io/raeva`. Release builds need glibc, so use a Debian or Ubuntu
+based image, not Alpine.
 
 ## What the action does
 
@@ -152,16 +241,23 @@ credentials.
    that directory to `PATH`. With `rv-alias: true` it also installs `rv`.
 5. With `cache: true`, restores the artifact store and `metadata.db` with
    `actions/cache`, keyed by the OS, the architecture, and the SHA-256 of the
-   lock file. A successful job saves them when the key missed.
+   lock file. On a push to the default branch, a successful job saves them at
+   its end when the key missed.
 6. With `check: true`, runs `raeva sync --frozen`. A failure gives an error
    annotation on `raeva.lock` with the error code, the changes, and raeva's
-   hints. raeva's warnings become one annotation per warning code.
+   hints. raeva's warnings become one annotation per warning code, except
+   `HTTP_REPO_BLOCKED`, which only the job summary lists. On a bot's pull
+   request with a stale lock, the summary also shows the proposed lock.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
-   commit's `raeva.lock` with this one and writes `raeva lock diff` to the job
-   summary. Linux and macOS.
-8. With `vuln: true`, runs `raeva vuln --format sarif`, uploads the log to code
-   scanning, and then fails the job if a finding meets `vuln-fail-on`. An
-   incomplete scan uploads the findings it has and fails the job.
+   commit's `raeva.lock` with this one, writes `raeva lock diff` to the job
+   summary, and uploads the full diff as the artifact `raeva-lock-diff` (with
+   the working directory in the name for a subdirectory). Linux and macOS.
+8. With `vuln: true`, runs `raeva vuln --format sarif`, writes a findings
+   table to the job summary, uploads the log to code scanning, and then fails
+   the job if a finding meets `vuln-fail-on`. An incomplete scan uploads the
+   findings it has and fails the job. Before the upload, the action asks code
+   scanning whether it takes one; when it answers 403, the upload is skipped
+   with one notice.
 9. With `relock: true`, runs `raeva sync` for every platform the lock records,
    read from the lock text so a conflicted lock is written again. The action
    never commits or pushes; see `examples/relock.yml`.
@@ -176,20 +272,20 @@ shell installer skips the check when `sha256sum` is missing.
 | --- | --- | --- |
 | `version` | required | An exact version such as `0.5.0`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
-| `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
-| `cache` | `true` | Cache the artifact store and metadata cache. |
+| `token` | `github.token` | Read token for the attestation, a private release download, the base commit's lock, and the code scanning check before an upload. |
+| `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |
 | `working-directory` | `.` | The directory with the root `pom.xml` and `raeva.lock`. |
 | `check` | `false` | Run `raeva sync --frozen`. |
-| `platforms` | empty | Platforms for `check` and `relock`, such as `linux-x86_64,macos-aarch64`. Empty means the runner's platform for `check` and every recorded platform for `relock`. |
+| `platforms` | empty | Platforms for `check` and `relock`, such as `linux-x86_64,macos-aarch64`. Empty means every platform the lock records. |
 | `settings` | empty | A Maven settings file, relative to the workspace, that `check`, `vuln` and `relock` read in place of `~/.m2/settings.xml`, passed as `-s`. |
-| `profiles` | empty | Maven profile ids, comma separated (`ci,!slow`), passed as `-P`. |
-| `properties` | empty | Maven user properties, one `name=value` per line, each passed as `-D`. |
-| `lock-diff` | `true` | With `check`, write the pull request's lock diff to the job summary. `only` writes the diff and skips `check` and `vuln`. |
+| `profiles` | empty | Maven profile ids, comma separated (`ci,!slow`), passed as `-P`. Only profiles that change resolution. |
+| `properties` | empty | Maven user properties, one `name=value` per line, each passed as `-D`. Only properties that change resolution; see "Options that change resolution". |
+| `lock-diff` | `true` | With `check`, write the pull request's lock diff to the job summary and an artifact. `only` writes the diff and skips `check` and `vuln`. Linux and macOS; `only` fails on Windows. |
 | `relock` | `false` | Run `raeva sync` for every recorded platform. Linux and macOS only. |
 | `vuln` | `false` | Run `raeva vuln --format sarif`. |
-| `vuln-fail-on` | `high` | `any`, `low`, `medium`, `high`, `critical`, or `never`. |
+| `vuln-fail-on` | `high` | `any`, `low`, `medium`, `high`, `critical`, or `never`, which reports findings without failing the job. |
 | `vex` | empty | OpenVEX files, one path per line relative to the workspace, passed as `--vex`. Suppressed results stay in the SARIF log but are not counted as findings. |
-| `sarif-upload` | `true` | Upload the SARIF log. The job needs `security-events: write`. |
+| `sarif-upload` | `true` | Upload the SARIF log. The job needs `security-events: write`; a private repository also needs GitHub Code Security. |
 | `sarif-category` | empty | Code scanning category; empty means one per `working-directory`. |
 | `rv-alias` | `false` | Also install the command as `rv`. |
 | `repository` | `raeva-io/raeva` | Where releases and attestations come from. |
@@ -210,11 +306,12 @@ shell installer skips the check when `sha256sum` is missing.
 | Windows x64 | `x86_64-pc-windows-msvc` | pwsh |
 | Windows ARM64 | `x86_64-pc-windows-msvc` under emulation | pwsh |
 
-On Windows the action installs, caches, and runs `check` and `vuln`; `relock`
-and `lock-diff` need Linux or macOS. Release builds need glibc. The action
-refuses a musl system, such as an Alpine container. `verify: attestation`
-needs `gh`, which every GitHub-hosted image has. On a self-hosted runner
-without `gh`, set `verify: sha256`.
+On Windows the action installs, caches, and runs `check` and `vuln`;
+`relock`, `lock-diff`, and the proposed lock need Linux or macOS, and
+`relock: true` and `lock-diff: only` fail there. Release builds need glibc.
+The action refuses a musl system, such as an Alpine container.
+`verify: attestation` needs `gh`, which every GitHub-hosted image has. On a
+self-hosted runner without `gh`, set `verify: sha256`.
 
 ## The cache
 
@@ -223,29 +320,36 @@ The cache holds `store` and `metadata.db` from the raeva data directory:
 macOS, `%LOCALAPPDATA%\raeva` on Windows, or `$RAEVA_HOME` when it is set. It
 does not hold `config.toml` or credentials.
 
-raeva re-hashes a stored file against its pin before `export-m2` copies it,
-and an online `sync --frozen` downloads a file again when the stored copy does
-not match. A partial match from `restore-keys` brings files that the lock no
-longer uses, so the cache grows until GitHub evicts it.
+Only pushes to the default branch save it, including the first run with an
+empty cache. Pull requests, merge queues, and scheduled runs restore it. A
+cache that a pull request saved would serve only that pull request, and
+saving takes longer than a cold check.
 
-A restored `metadata.db` means `--frozen` does not fetch verified release POMs
-again, so it does not see a parent POM or BOM that was republished upstream
-with other bytes. A scheduled job with `cache: false` does.
+raeva re-hashes a stored file against its pin before `export-m2` copies it,
+and an online `sync --frozen` downloads a file again when the stored copy is
+missing or does not match. A warm cache therefore does not show that the
+locked files can still be downloaded, and a restored `metadata.db` means
+`--frozen` does not fetch verified release POMs again, so it does not see a
+parent POM or BOM that was republished upstream. A scheduled job with
+`cache: false`, such as the weekly run of `examples/vuln.yml`, does. A partial
+match from `restore-keys` brings files that the lock no longer uses, so the
+cache grows until GitHub evicts it.
 
 ## Security notes
 
 - Every input reaches the scripts as an environment variable, never as script
   text.
 - `token` goes to the install step, for `gh`, and to the check step, which
-  reads the base commit's lock through the contents API. raeva never sees it,
-  and it needs no write scope.
+  reads the base commit's lock through the contents API and asks code
+  scanning whether it takes an upload. raeva never sees it, and it needs no
+  write scope.
 - Text from raeva quotes POM and repository data, so the summary puts it in a
-  fence it cannot close.
+  fence it cannot close, and escapes Markdown in the findings table.
+- The proposed lock on a bot's pull request comes from a `raeva sync` in a
+  copy of the working directory, removed before the step ends.
 - The SARIF upload needs `security-events: write`, and in a private
-  repository also `actions: read` and GitHub Code Security. A refused upload,
-  such as one to a private repository without Code Security or from a
-  Dependabot `push` with a read-only token, logs an error but does not fail
-  the job; findings still fail it.
+  repository also `actions: read` and GitHub Code Security. A refused upload
+  logs an error but does not fail the job; findings still fail it.
 - `known-checksums.txt` changes only in a reviewed pull request, after the
   release's attestations were verified.
 
@@ -263,8 +367,9 @@ composite action:
   with a three-platform lock), and `VULN_PROJECT`; `PWSH`, `GH_TOKEN`, and
   `RELEASE_VERSION` enable more tests.
 - `test/relock.sh` runs the `run:` blocks of `examples/relock.yml` against a
-  local bare repository, including a lock with merge conflict markers. It
-  needs `RAEVA_BUILD` and `PROJECT`.
+  local bare repository with two Maven roots, including tampered artifacts
+  and a lock with merge conflict markers. It needs `RAEVA_BUILD` and
+  `PROJECT`.
 
 ## License
 

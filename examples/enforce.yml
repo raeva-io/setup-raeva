@@ -16,6 +16,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -30,7 +32,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - id: raeva
         uses: raeva-io/setup-raeva@v1.0.0
         with:

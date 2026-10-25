@@ -37,6 +37,20 @@ step relock diff > "$t/diff.sh"
 step push "Commit and push the lock" > "$t/push.sh"
 [[ -s "$t/diff.sh" && -s "$t/push.sh" ]] || { echo "cannot read run blocks"; exit 1; }
 
+# download-artifact unpacks a lone match straight into its path, so each
+# artifact carries its own raeva-relock-N directory and the push job merges.
+# shellcheck disable=SC2016
+python3 -I -c '
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+up = [s["with"] for s in jobs["relock"]["steps"] if "upload-artifact" in s.get("uses", "")]
+down = [s["with"] for s in jobs["push"]["steps"] if "download-artifact" in s.get("uses", "")]
+assert len(up) == 1 and len(down) == 1
+assert up[0]["path"] == "${{ runner.temp }}/relock" == down[0]["path"]
+assert down[0].get("merge-multiple") is True
+' "$here/examples/relock.yml" && ok "artifacts keep their raeva-relock-N directory when one is downloaded" \
+  || bad "artifacts keep their raeva-relock-N directory when one is downloaded"
+
 git init --quiet --bare "$t/remote.git"
 git clone --quiet "$t/remote.git" "$t/dev"
 rsync -a --exclude .git "$PROJECT/" "$t/dev/"
@@ -53,13 +67,13 @@ branch=dependabot/maven/com.google.code.gson-gson-2.13.1
   git commit --quiet -am "Bump gson to 2.13.1" && git push --quiet origin "$branch")
 head_sha=$(git -C "$t/dev" rev-parse HEAD)
 
-run_relock_job() { # <workdir> <root>
+run_relock_job() { # <workdir> <root> <job index>
   git clone --quiet "$t/remote.git" "$1" && git -C "$1" checkout --quiet "$head_sha"
   mkdir -p "$1.temp"
   : > "$1.out"
   (cd "$1" && env RAEVA_BIN="$RAEVA_BUILD" INPUT_WORKING_DIRECTORY="$2" GITHUB_OUTPUT="$1.out" RUNNER_TEMP="$1.temp" \
     bash "$here/scripts/check.sh" relock > "$1.log" 2>&1 &&
-    env ROOT="$2" RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" bash -e "$t/diff.sh" >> "$1.log" 2>&1)
+    env ROOT="$2" INDEX="$3" RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" bash -e "$t/diff.sh" >> "$1.log" 2>&1)
 }
 run_push_job() { # <workdir> <artifact tar>...: one artifact directory per tar
   local dir="$1" i=0 tarfile
@@ -74,20 +88,20 @@ run_push_job() { # <workdir> <artifact tar>...: one artifact directory per tar
 }
 
 # A relock job per root.
-run_relock_job "$t/relock" .
+run_relock_job "$t/relock" . 0
 code=$?
 [[ $code -eq 0 ]] && ok "relock job succeeds" || { bad "relock job succeeds (exit $code)"; cat "$t/relock.log"; }
 grep -q '^changed=true$' "$t/relock.out" && ok "relock job reports a change" || bad "relock job reports a change"
 grep -q "^relocked-platforms=$platforms\$" "$t/relock.out" && ok "relock keeps every locked platform" || bad "relock keeps every locked platform"
 grep -q PLATFORM_DROPPED "$t/relock.log" && bad "no PLATFORM_DROPPED warning" || ok "no PLATFORM_DROPPED warning"
-[[ "$(tar -tf "$t/relock.temp/relock/relock.tar")" == raeva.lock ]] && ok "artifact holds only raeva.lock" || bad "artifact holds only raeva.lock"
-run_relock_job "$t/relock-api" services/api
+[[ "$(tar -tf "$t/relock.temp/relock/raeva-relock-0/relock.tar")" == raeva.lock ]] && ok "artifact holds only raeva.lock" || bad "artifact holds only raeva.lock"
+run_relock_job "$t/relock-api" services/api 1
 code=$?
 [[ $code -eq 0 ]] && ok "relock job of a second root succeeds" || { bad "relock job of a second root succeeds (exit $code)"; cat "$t/relock-api.log"; }
-[[ "$(tar -tf "$t/relock-api.temp/relock/relock.tar")" == services/api/raeva.lock ]] && ok "second artifact holds only that root's lock" || bad "second artifact holds only that root's lock"
+[[ "$(tar -tf "$t/relock-api.temp/relock/raeva-relock-1/relock.tar")" == services/api/raeva.lock ]] && ok "second artifact holds only that root's lock" || bad "second artifact holds only that root's lock"
 
 # Push job.
-run_push_job "$t/push" "$t/relock.temp/relock/relock.tar" "$t/relock-api.temp/relock/relock.tar"
+run_push_job "$t/push" "$t/relock.temp/relock/raeva-relock-0/relock.tar" "$t/relock-api.temp/relock/raeva-relock-1/relock.tar"
 code=$?
 [[ $code -eq 0 ]] && ok "push job succeeds" || { bad "push job succeeds (exit $code)"; cat "$t/push.log"; }
 git clone --quiet --branch "$branch" "$t/remote.git" "$t/after"
@@ -102,7 +116,7 @@ git clone --quiet --branch "$branch" "$t/remote.git" "$t/after"
 # push nothing, so the race is set up with a new bot commit.)
 (cd "$t/dev" && git pull --quiet --ff-only origin "$branch" &&
   git commit --quiet --allow-empty -m "Bot update" && git push --quiet origin "$branch")
-run_push_job "$t/push-again" "$t/relock.temp/relock/relock.tar"
+run_push_job "$t/push-again" "$t/relock.temp/relock/raeva-relock-0/relock.tar"
 code=$?
 [[ $code -eq 0 ]] && grep -q "moved since this run started" "$t/push-again.log" && ok "a lost push race ends without an error" || { bad "a lost push race ends without an error (exit $code)"; cat "$t/push-again.log"; }
 
@@ -132,7 +146,7 @@ code=$?
 for name in raeva-relock-00 raeva-relock-18446744073709551616 raeva-relock-+0; do
   dir="$t/push-name-$name"
   git clone --quiet "$t/remote.git" "$dir" && git -C "$dir" checkout --quiet "$head_sha"
-  mkdir -p "$dir.temp/relock/$name" && cp "$t/relock.temp/relock/relock.tar" "$dir.temp/relock/$name/"
+  mkdir -p "$dir.temp/relock/$name" && cp "$t/relock.temp/relock/raeva-relock-0/relock.tar" "$dir.temp/relock/$name/"
   (cd "$dir" && env ROOTS='["."]' HEAD_REF="$branch" HEAD_SHA="$head_sha" TOKEN=not-a-real-token RUNNER_TEMP="$dir.temp" \
     bash -e "$t/push.sh" > "$dir.log" 2>&1)
   code=$?
@@ -140,7 +154,7 @@ for name in raeva-relock-00 raeva-relock-18446744073709551616 raeva-relock-+0; d
 done
 
 # An artifact for a root the matrix does not list.
-run_push_job "$t/push-extra" "$t/relock.temp/relock/relock.tar" "$t/relock-api.temp/relock/relock.tar" "$t/relock.temp/relock/relock.tar"
+run_push_job "$t/push-extra" "$t/relock.temp/relock/raeva-relock-0/relock.tar" "$t/relock-api.temp/relock/raeva-relock-1/relock.tar" "$t/relock.temp/relock/raeva-relock-0/relock.tar"
 code=$?
 [[ $code -ne 0 ]] && grep -q "unexpected artifact: raeva-relock-2" "$t/push-extra.log" && ok "refuses an artifact of no listed root" || bad "refuses an artifact of no listed root (exit $code)"
 

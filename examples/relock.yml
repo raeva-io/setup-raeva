@@ -68,8 +68,12 @@ jobs:
       - id: diff
         env:
           ROOT: ${{ matrix.root }}
+          INDEX: ${{ strategy.job-index }}
         run: |
-          mkdir -p "$RUNNER_TEMP/relock"
+          # The archive sits in a directory named after the artifact:
+          # download-artifact unpacks a lone artifact without one.
+          out="$RUNNER_TEMP/relock/raeva-relock-$INDEX"
+          mkdir -p "$out"
           # The root's committed lock and Trusted Checksums files, as paths
           # from the repository root.
           mapfile -t files < <(git ls-files -- "$ROOT/raeva.lock" \
@@ -79,13 +83,13 @@ jobs:
             exit 0
           fi
           git diff --stat -- "${files[@]}"
-          tar -cf "$RUNNER_TEMP/relock/relock.tar" "${files[@]}"
+          tar -cf "$out/relock.tar" "${files[@]}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
       - if: steps.diff.outputs.changed == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: raeva-relock-${{ strategy.job-index }}
-          path: ${{ runner.temp }}/relock/relock.tar
+          path: ${{ runner.temp }}/relock
           retention-days: 1
 
   push:
@@ -98,6 +102,7 @@ jobs:
         with:
           pattern: raeva-relock-*
           path: ${{ runner.temp }}/relock
+          merge-multiple: true
       - id: found
         run: |
           shopt -s nullglob

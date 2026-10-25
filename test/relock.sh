@@ -69,7 +69,7 @@ run_push_job() { # <workdir> <artifact tar>...: one artifact directory per tar
     mkdir -p "$dir.temp/relock/raeva-relock-$i" && cp "$tarfile" "$dir.temp/relock/raeva-relock-$i/relock.tar"
     i=$((i + 1))
   done
-  (cd "$dir" && env HEAD_REF="$branch" HEAD_SHA="$head_sha" TOKEN=not-a-real-token RUNNER_TEMP="$dir.temp" \
+  (cd "$dir" && env ROOTS='[".", "services/api/"]' HEAD_REF="$branch" HEAD_SHA="$head_sha" TOKEN=not-a-real-token RUNNER_TEMP="$dir.temp" \
     bash -e "$t/push.sh" > "$dir.log" 2>&1)
 }
 
@@ -111,14 +111,27 @@ mkdir -p "$t/evil" && cp "$t/after/raeva.lock" "$t/after/pom.xml" "$t/evil/"
 tar -cf "$t/evil.tar" -C "$t/evil" raeva.lock pom.xml
 run_push_job "$t/push-evil" "$t/evil.tar"
 code=$?
-[[ $code -ne 0 ]] && grep -q "unexpected file in artifact: pom.xml" "$t/push-evil.log" && ok "refuses an artifact with other files" || bad "refuses an artifact with other files (exit $code)"
+[[ $code -ne 0 ]] && grep -q "unexpected file in artifact raeva-relock-0: pom.xml" "$t/push-evil.log" && ok "refuses an artifact with other files" || bad "refuses an artifact with other files (exit $code)"
 
-# A tampered artifact: a lock of a directory the branch has no lock in.
-mkdir -p "$t/evil3/other" && cp "$t/after/raeva.lock" "$t/evil3/other/"
-tar -cf "$t/evil3.tar" -C "$t/evil3" other/raeva.lock
+# A tampered artifact: the first root's job writes the second root's lock.
+mkdir -p "$t/evil3/services/api" && cp "$t/after/raeva.lock" "$t/evil3/services/api/"
+tar -cf "$t/evil3.tar" -C "$t/evil3" services/api/raeva.lock
 run_push_job "$t/push-evil3" "$t/evil3.tar"
 code=$?
-[[ $code -ne 0 ]] && grep -q "other/raeva.lock is not a committed file" "$t/push-evil3.log" && ok "refuses a lock the branch does not have" || bad "refuses a lock the branch does not have (exit $code)"
+[[ $code -ne 0 ]] && grep -q "unexpected file in artifact raeva-relock-0: services/api/raeva.lock" "$t/push-evil3.log" \
+  && ok "refuses another root's lock" || bad "refuses another root's lock (exit $code)"
+
+# A tampered artifact: a Trusted Checksums file the branch does not have.
+mkdir -p "$t/evil5/.mvn/checksums" && printf 'x\n' > "$t/evil5/.mvn/checksums/checksums.sha1"
+tar -cf "$t/evil5.tar" -C "$t/evil5" .mvn/checksums/checksums.sha1
+run_push_job "$t/push-evil5" "$t/evil5.tar"
+code=$?
+[[ $code -ne 0 ]] && grep -q "checksums.sha1 is not a committed file" "$t/push-evil5.log" && ok "refuses a file the branch does not have" || bad "refuses a file the branch does not have (exit $code)"
+
+# An artifact for a root the matrix does not list.
+run_push_job "$t/push-extra" "$t/relock.temp/relock/relock.tar" "$t/relock-api.temp/relock/relock.tar" "$t/relock.temp/relock/relock.tar"
+code=$?
+[[ $code -ne 0 ]] && grep -q "unexpected artifact: raeva-relock-2" "$t/push-extra.log" && ok "refuses an artifact of no listed root" || bad "refuses an artifact of no listed root (exit $code)"
 
 # A tampered artifact: a path that leaves the checkout.
 # GNU tar strips a leading ../ when it writes an archive, so Python writes it.
@@ -127,7 +140,7 @@ with tarfile.open(sys.argv[1], "w") as tar: tar.add(sys.argv[2], arcname="servic
   "$t/evil4.tar" "$t/after/raeva.lock"
 run_push_job "$t/push-evil4" "$t/evil4.tar"
 code=$?
-[[ $code -ne 0 ]] && grep -q "unexpected file in artifact: services/../raeva.lock" "$t/push-evil4.log" && ok "refuses a path with .." || bad "refuses a path with .. (exit $code)"
+[[ $code -ne 0 ]] && grep -q "unexpected file in artifact raeva-relock-0: services/../raeva.lock" "$t/push-evil4.log" && ok "refuses a path with .." || bad "refuses a path with .. (exit $code)"
 
 # A tampered artifact: raeva.lock as a symlink.
 mkdir -p "$t/evil2" && ln -s /etc/passwd "$t/evil2/raeva.lock"

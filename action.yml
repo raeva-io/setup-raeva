@@ -21,9 +21,8 @@ inputs:
   token:
     description: >-
       Read token for the attestations, for the release download when the
-      repository is private, with lock-diff for the base commit's raeva.lock
-      (contents: read), and with vuln for asking code scanning whether it
-      takes an upload. It needs no write scope.
+      repository is private, and, with lock-diff, for the base commit's
+      raeva.lock (contents: read). It needs no write scope.
     default: ${{ github.token }}
   cache:
     description: >-
@@ -97,8 +96,8 @@ inputs:
     description: >-
       Upload the SARIF log to GitHub code scanning. The job needs
       security-events: write, and private repositories need GitHub Code
-      Security. When code scanning refuses the token, the upload is skipped
-      with a notice; the findings are in the job summary either way.
+      Security. When code scanning says it is not enabled, the upload is
+      skipped with a notice; the findings are in the job summary either way.
     default: "true"
   sarif-category:
     description: >-
@@ -242,6 +241,7 @@ runs:
         INPUT_PROFILES: ${{ inputs.profiles }}
         INPUT_PROPERTIES: ${{ inputs.properties }}
         GH_TOKEN: ${{ inputs.token }}
+        UPLOAD_TOKEN: ${{ github.token }}
 
     - id: scan-windows
       if: runner.os == 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true' || inputs.lock-diff == 'only')
@@ -261,23 +261,23 @@ runs:
         INPUT_SETTINGS: ${{ inputs.settings }}
         INPUT_PROFILES: ${{ inputs.profiles }}
         INPUT_PROPERTIES: ${{ inputs.properties }}
-        GH_TOKEN: ${{ inputs.token }}
+        UPLOAD_TOKEN: ${{ github.token }}
 
     # A failed frozen check stops the steps after it, and its proposed lock
     # is the diff most worth keeping, so this step runs after a failure too.
     # Several jobs can write the same lock diff; a later upload replaces an
     # earlier one, and a lost race only warns.
-    - if: "!cancelled() && steps.scan-unix.outputs.lock-diff-dir"
+    - if: "!cancelled() && (steps.scan-unix.outputs.lock-diff-dir || steps.scan-windows.outputs.lock-diff-dir)"
       continue-on-error: true
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ${{ steps.scan-unix.outputs.lock-diff-artifact }}
-        path: ${{ steps.scan-unix.outputs.lock-diff-dir }}
+        name: ${{ steps.scan-unix.outputs.lock-diff-artifact || steps.scan-windows.outputs.lock-diff-artifact }}
+        path: ${{ steps.scan-unix.outputs.lock-diff-dir || steps.scan-windows.outputs.lock-diff-dir }}
         retention-days: 7
         overwrite: true
         if-no-files-found: ignore
 
-    # The scan step skips an upload that code scanning refuses. Any other
+    # The scan step skips the upload when code scanning is not enabled. Any other
     # refused upload, such as one with a read-only token, warns instead of
     # failing the job.
     - if: >-

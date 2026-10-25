@@ -116,7 +116,7 @@ A dependency bot changes a POM but not `raeva.lock`, so the check fails on its
 pull request. The job summary then also shows the proposed lock, the diff
 that `raeva sync` would write, with the command that fixes it. raeva writes
 it in a copy that is removed afterwards: the check still fails, and later
-steps see the committed lock. Linux and macOS runners.
+steps see the committed lock.
 
 There are three ways to get the lock commit:
 
@@ -177,7 +177,9 @@ root has its own `raeva.lock`, cache key, lock diff artifact, and SARIF log.
 The code scanning category defaults to `raeva` for the repository root and
 `raeva/<working-directory>` otherwise, so the alerts of two roots do not
 replace each other. In `examples/relock.yml`, list the roots in the
-`root` matrix; one commit carries every changed lock.
+`root` matrix and, in the same order, in `ROOTS` of the push job, which
+accepts from each relock job only that root's files. One commit carries every
+changed lock.
 
 ## Private repositories and forks
 
@@ -247,17 +249,20 @@ based image, not Alpine.
    annotation on `raeva.lock` with the error code, the changes, and raeva's
    hints. raeva's warnings become one annotation per warning code, except
    `HTTP_REPO_BLOCKED`, which only the job summary lists. On a bot's pull
-   request with a stale lock, the summary also shows the proposed lock.
+   request with a stale lock, the summary also shows the proposed lock, and
+   the full proposed diff goes to an artifact.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
    commit's `raeva.lock` with this one, writes `raeva lock diff` to the job
-   summary, and uploads the full diff as the artifact `raeva-lock-diff` (with
-   the working directory in the name for a subdirectory). Linux and macOS.
+   summary, and uploads the full diff as an artifact, `raeva-lock-diff-`
+   followed by the working directory and a hash of it and the options; the
+   summary names it. Linux and macOS.
 8. With `vuln: true`, runs `raeva vuln --format sarif`, writes a findings
    table to the job summary, uploads the log to code scanning, and then fails
    the job if a finding meets `vuln-fail-on`. An incomplete scan uploads the
    findings it has and fails the job. Before the upload, the action asks code
-   scanning whether it takes one; when it answers 403, the upload is skipped
-   with one notice.
+   scanning with the job token; when it answers that code scanning is not
+   enabled, as in a private repository without GitHub Code Security, the
+   upload is skipped with one notice.
 9. With `relock: true`, runs `raeva sync` for every platform the lock records,
    read from the lock text so a conflicted lock is written again. The action
    never commits or pushes; see `examples/relock.yml`.
@@ -272,7 +277,7 @@ shell installer skips the check when `sha256sum` is missing.
 | --- | --- | --- |
 | `version` | required | An exact version such as `0.5.0`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
-| `token` | `github.token` | Read token for the attestation, a private release download, the base commit's lock, and the code scanning check before an upload. |
+| `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |
 | `working-directory` | `.` | The directory with the root `pom.xml` and `raeva.lock`. |
 | `check` | `false` | Run `raeva sync --frozen`. |
@@ -306,8 +311,8 @@ shell installer skips the check when `sha256sum` is missing.
 | Windows x64 | `x86_64-pc-windows-msvc` | pwsh |
 | Windows ARM64 | `x86_64-pc-windows-msvc` under emulation | pwsh |
 
-On Windows the action installs, caches, and runs `check` and `vuln`;
-`relock`, `lock-diff`, and the proposed lock need Linux or macOS, and
+On Windows the action installs, caches, and runs `check`, with the proposed
+lock, and `vuln`; `relock` and `lock-diff` need Linux or macOS, and
 `relock: true` and `lock-diff: only` fail there. Release builds need glibc.
 The action refuses a musl system, such as an Alpine container.
 `verify: attestation` needs `gh`, which every GitHub-hosted image has. On a
@@ -340,13 +345,17 @@ cache grows until GitHub evicts it.
 - Every input reaches the scripts as an environment variable, never as script
   text.
 - `token` goes to the install step, for `gh`, and to the check step, which
-  reads the base commit's lock through the contents API and asks code
-  scanning whether it takes an upload. raeva never sees it, and it needs no
-  write scope.
+  reads the base commit's lock through the contents API. The check step also
+  gets the job token, to ask code scanning whether it takes an upload. raeva
+  never sees either, and neither needs a write scope from the action.
+- raeva's output quotes POM and repository data, so the action replays it
+  with workflow commands turned off.
 - Text from raeva quotes POM and repository data, so the summary puts it in a
   fence it cannot close, and escapes Markdown in the findings table.
 - The proposed lock on a bot's pull request comes from a `raeva sync` in a
   copy of the working directory, removed before the step ends.
+- In `examples/relock.yml`, the push job gives git its token through the
+  environment, not the command line.
 - The SARIF upload needs `security-events: write`, and in a private
   repository also `actions: read` and GitHub Code Security. A refused upload
   logs an error but does not fail the job; findings still fail it.

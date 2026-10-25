@@ -13,9 +13,11 @@ raeva="${RAEVA_BIN:-raeva}"
 workdir="${INPUT_WORKING_DIRECTORY:-.}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 tmp="${RUNNER_TEMP:-/tmp}"
-# Only the GitHub API requests use the token; raeva never sees it.
+# Only the GitHub API requests use the tokens; raeva never sees them. The
+# code scanning check uses the job token, which the SARIF upload uses too.
 token="${GH_TOKEN:-}"
-unset GH_TOKEN
+upload_token="${UPLOAD_TOKEN:-}"
+unset GH_TOKEN UPLOAD_TOKEN
 api="${GITHUB_API_URL:-https://api.github.com}"
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
 
@@ -36,6 +38,17 @@ while IFS= read -r line; do
   line="${line%"${line##*[![:space:]]}"}"
   [[ -z "$line" ]] || maven+=("--define=$line")
 done <<< "${INPUT_PROPERTIES:-}"
+
+# raeva's output quotes POM and repository data, so the runner reads no
+# workflow commands in it: they are off until a marker it cannot guess.
+raw() { # <command...>: runs it, stderr included, and keeps its exit code
+  local marker code=0
+  marker=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  echo "::stop-commands::$marker"
+  "$@" 2>&1 || code=$?
+  echo "::$marker::"
+  return "$code"
+}
 
 # Workflow commands need %, CR, and LF escaped in messages, and also : and ,
 # in properties such as title.
@@ -78,14 +91,15 @@ hint_for() {
   esac
 }
 
-# The command a developer runs to write the lock again, with this job's -P
-# and -D options. A settings file of the runner does not apply locally.
+# The command a developer runs to write the lock again, with this job's
+# Maven options. A settings file outside the repository, such as one the job
+# writes to RUNNER_TEMP, is left out, and the summary says so.
 sync_command() {
   local cmd=(raeva) arg
   [[ "$workdir" == . || "$workdir" == ./ ]] || cmd+=(-C "$workdir")
   cmd+=(sync)
   for arg in ${maven[@]+"${maven[@]}"}; do
-    [[ "$arg" == --settings=* ]] || cmd+=("$arg")
+    [[ "$arg" == --settings=/* ]] || cmd+=("$arg")
   done
   [[ -z "${INPUT_PLATFORMS:-}" ]] || cmd+=(--platforms "$INPUT_PLATFORMS")
   local word line=""
@@ -126,25 +140,36 @@ lock_platforms() {
   sed -n 's/^platform = "\([a-z0-9_-]*\)"[[:space:]]*$/\1/p' "$1" | awk '!seen[$0]++' | paste -sd, -
 }
 
-# The artifact that holds the full lock diffs of this working directory.
+# The artifact that holds the full lock diffs of this working directory and
+# these options. Jobs with the same ones write the same diffs, so a later
+# upload may replace an earlier one; the hash keeps other roots and options
+# apart, as services/api and services-api.
 diff_artifact() {
-  local dir="${workdir%/}"
+  local dir="${workdir%/}" key hash arg
   dir="${dir#./}"
-  if [[ -z "$dir" || "$dir" == . ]]; then
-    printf 'raeva-lock-diff'
+  [[ "$dir" != . ]] || dir=""
+  key="$dir"
+  for arg in ${maven[@]+"${maven[@]}"}; do key+=$'\n'"$arg"; done
+  key+=$'\n'"${INPUT_PLATFORMS:-}"
+  if command -v sha256sum >/dev/null; then
+    hash=$(printf '%s' "$key" | sha256sum | cut -c1-8)
   else
-    printf 'raeva-lock-diff-%s' "$(printf '%s' "$dir" | tr -c 'A-Za-z0-9._-' '-')"
+    hash=$(printf '%s' "$key" | shasum -a 256 | cut -c1-8)
+  fi
+  if [[ -z "$dir" ]]; then
+    printf 'raeva-lock-diff-%s' "$hash"
+  else
+    printf 'raeva-lock-diff-%s-%s' "$(printf '%s' "$dir" | tr -c 'A-Za-z0-9._-' '-')" "$hash"
   fi
 }
 
 # Writes `raeva lock diff <old> <new>` to the job summary, and with a file
 # name the full text to the lock diff artifact too. Never fails the step:
 # the frozen check reports a lock that cannot be read.
-diff_summary() { # <title> <old> <new> [artifact file] [note]
+diff_summary() { # <title, or empty for none> <old> <new> [artifact file]
   local text code=0 file="${4:-}" more="run 'raeva lock diff' locally"
   text=$("$raeva" -q -C "$workdir" lock diff "$2" "$3" 2>&1) || code=$?
-  printf '### %s\n' "$1" >> "$summary"
-  [[ -z "${5:-}" ]] || printf '\n%s\n' "$5" >> "$summary"
+  [[ -z "$1" ]] || printf '### %s\n' "$1" >> "$summary"
   if [[ $code -ne 0 ]]; then
     printf '\n`raeva lock diff` could not compare the locks (exit %s).\n' "$code" >> "$summary"
   fi
@@ -179,16 +204,18 @@ proposed() {
   local args=(-q -C "$copy" sync ${maven[@]+"${maven[@]}"})
   [[ -z "$platforms" ]] || args+=(--platforms "$platforms")
   echo "::group::raeva sync in a copy, for the proposed lock"
-  "$raeva" "${args[@]}" || code=$?
+  raw "$raeva" "${args[@]}" || code=$?
   echo "::endgroup::"
-  local fix
-  fix=$(sync_command)
+  printf '\n### Proposed raeva.lock, not committed\n' >> "$summary"
   if [[ $code -ne 0 ]]; then
-    printf '\n### Proposed raeva.lock\n\n`raeva sync` could not write a proposed lock (exit %s); see the step log. The error above stands.\n' "$code" >> "$summary"
+    printf '\n`raeva sync` could not write a proposed lock (exit %s); see the step log. The error above stands.\n' "$code" >> "$summary"
   else
-    diff_summary "Proposed raeva.lock, not committed" "$workdir/raeva.lock" "$copy/raeva.lock" proposed.diff \
-      'This is the lock `raeva sync` writes for this pull request. It is not committed, later steps use the committed lock, and the check above still fails. To fix it, run this on the branch and commit raeva.lock:'
-    fenced "$fix"
+    printf '\nThis is the lock `raeva sync` writes for this pull request. It is not committed, later steps use the committed lock, and the check above still fails. To fix it, run this on the branch and commit raeva.lock:\n' >> "$summary"
+    fenced "$(sync_command)"
+    if [[ "${INPUT_SETTINGS:-}" == /* ]]; then
+      printf '\nThis job reads the settings file `%s`; run it with a settings file that has the same repositories and profiles.\n' "${INPUT_SETTINGS//\`/}" >> "$summary"
+    fi
+    diff_summary "" "$workdir/raeva.lock" "$copy/raeva.lock" proposed.diff
   fi
   rm -rf "$copy"
 }
@@ -197,7 +224,8 @@ frozen() {
   local args=(--json -C "$workdir" sync --frozen ${maven[@]+"${maven[@]}"})
   [[ -z "${INPUT_PLATFORMS:-}" ]] || args+=(--platforms "$INPUT_PLATFORMS")
   local json="$run/frozen.json" code=0
-  "$raeva" "${args[@]}" > "$json" || code=$?
+  "$raeva" "${args[@]}" > "$json" 2> "$run/frozen.err" || code=$?
+  raw cat "$run/frozen.err"
   out frozen-exit-code "$code"
   if [[ $code -eq 0 ]]; then
     local resolved=""
@@ -236,19 +264,21 @@ sarif_category() {
 }
 
 # An upload that code scanning refuses only adds an error annotation, so ask
-# first. Code scanning answers 403 when a private repository has no GitHub
-# Code Security or the token has no security-events access. Any other answer
-# leaves the upload to try.
+# first, with the token the upload uses. Only a 403 that says code scanning
+# is not enabled, as for a private repository without GitHub Code Security,
+# skips the upload; a token that may not read alerts can still upload.
 sarif_upload() {
   [[ "${INPUT_SARIF_UPLOAD:-false}" == true && -n "${GITHUB_REPOSITORY:-}" ]] || return 0
   local body="$run/code-scanning.json" status why=""
-  status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 \
+  status=$(printf 'Authorization: Bearer %s\n' "$upload_token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 \
     -H @- -H 'Accept: application/vnd.github+json' -o "$body" -w '%{http_code}' \
     "$api/repos/$GITHUB_REPOSITORY/code-scanning/alerts?per_page=1") || status=000
   if [[ "$status" == 403 ]]; then
     command -v jq >/dev/null && why=$(jq -r '.message // empty' "$body" 2>/dev/null | cut -c1-200 || true)
-    echo "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403${why:+ ($(esc_msg "$why"))}. A private repository needs GitHub Code Security, and the job needs security-events: write. The findings are in the job summary; sarif-upload: false skips this check."
-    return 0
+    if printf '%s' "$why" | grep -qiE 'must be enabled|not enabled'; then
+      echo "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(esc_msg "$why")). A private repository needs GitHub Code Security. The findings are in the job summary; sarif-upload: false skips this check."
+      return 0
+    fi
   fi
   out sarif-upload true
 }
@@ -286,7 +316,7 @@ vuln() {
     [[ -z "$line" ]] || vex+=(--vex "$line")
   done <<< "${INPUT_VEX:-}"
   "$raeva" -C "$workdir" vuln --format sarif --fail-on "$fail_on" ${vex[@]+"${vex[@]}"} ${maven[@]+"${maven[@]}"} > "$sarif" 2> "$errlog" || code=$?
-  cat "$errlog" >&2
+  raw cat "$errlog"
   out vuln-exit-code "$code"
   printf '\n### Vulnerabilities\n' >> "$summary"
   # An incomplete scan (exit 2 or more) still writes the findings it has, so
@@ -388,10 +418,10 @@ relock() {
   local args=(-C "$workdir" sync ${maven[@]+"${maven[@]}"})
   [[ -z "$platforms" ]] || args+=(--platforms "$platforms")
   echo "raeva ${args[*]}"
-  "$raeva" "${args[@]}"
+  raw "$raeva" "${args[@]}"
   # Keep Maven Trusted Checksums in step when the project commits them.
   if [[ -f "$workdir/.mvn/checksums/checksums.sha256" ]]; then
-    "$raeva" -C "$workdir" export-checksums ${maven[@]+"${maven[@]}"}
+    raw "$raeva" -C "$workdir" export-checksums ${maven[@]+"${maven[@]}"}
   fi
   out relocked-platforms "$platforms"
   if [[ -f "$before" ]] && ! cmp -s "$before" "$lock"; then

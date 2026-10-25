@@ -1,7 +1,7 @@
 # `check.ps1 scan` runs the frozen check and the optional vulnerability scan.
 # `check.ps1 gate` runs after the SARIF upload and fails the job on findings,
-# so the upload happens before the job fails. The lock diffs and the relock
-# need Linux or macOS.
+# so the upload happens before the job fails. The pull request lock diff and
+# the relock need Linux or macOS.
 param([string]$Mode = 'scan')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -9,9 +9,10 @@ Set-StrictMode -Version 3.0
 $raeva = if ($env:RAEVA_BIN) { $env:RAEVA_BIN } else { 'raeva' }
 $workdir = if ($env:INPUT_WORKING_DIRECTORY) { $env:INPUT_WORKING_DIRECTORY } else { '.' }
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
-# Only the GitHub API request uses the token; raeva never sees it.
-$token = "$env:GH_TOKEN"
-Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+# Only the code scanning check uses a token, the job token that the SARIF
+# upload uses too; raeva never sees one.
+$uploadToken = "$env:UPLOAD_TOKEN"
+Remove-Item Env:GH_TOKEN, Env:UPLOAD_TOKEN -ErrorAction SilentlyContinue
 $api = if ($env:GITHUB_API_URL) { $env:GITHUB_API_URL } else { 'https://api.github.com' }
 
 function Out([string]$Name, [string]$Value) {
@@ -37,6 +38,17 @@ if ($env:INPUT_PROFILES) { $maven += "--activate-profiles=$env:INPUT_PROFILES" }
 foreach ($line in "$env:INPUT_PROPERTIES" -split "`n") {
     $property = $line.Trim()
     if ($property) { $maven += "--define=$property" }
+}
+
+# raeva's output quotes POM and repository data, so the runner reads no
+# workflow commands in it: they are off until a marker it cannot guess.
+function Write-Raw([string[]]$Paths) {
+    $marker = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16))
+    Write-Host "::stop-commands::$marker"
+    foreach ($path in $Paths) {
+        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path | Write-Host }
+    }
+    Write-Host "::$marker::"
 }
 
 # Workflow commands need %, CR, and LF escaped in messages, and also : and ,
@@ -113,13 +125,104 @@ function Write-Warnings($Envelope, [string]$Command) {
     Fenced ($lines -join "`n")
 }
 
+# The platforms a lock records, read as text, since a malformed or
+# conflicted lock still names them.
+function Get-LockPlatforms([string]$Lock) {
+    if (-not (Test-Path -LiteralPath $Lock)) { return '' }
+    $seen = [Collections.Generic.List[string]]::new()
+    foreach ($line in [IO.File]::ReadAllLines($Lock)) {
+        if ($line -cmatch '^platform = "([a-z0-9_-]*)"\s*$' -and -not $seen.Contains($Matches[1])) { $seen.Add($Matches[1]) }
+    }
+    $seen -join ','
+}
+
+# The command a developer runs to write the lock again, with this job's
+# Maven options. A settings file outside the repository, such as one the job
+# writes to RUNNER_TEMP, is left out, and the summary says so.
+function Get-SyncCommand {
+    $words = @('raeva')
+    if ($workdir -ne '.' -and $workdir -ne './') { $words += @('-C', $workdir) }
+    $words += 'sync'
+    foreach ($arg in $maven) {
+        if (-not ($arg.StartsWith('--settings=') -and [IO.Path]::IsPathRooted($arg.Substring(11)))) { $words += $arg }
+    }
+    if ($env:INPUT_PLATFORMS) { $words += @('--platforms', $env:INPUT_PLATFORMS) }
+    ($words | ForEach-Object { if ($_ -cmatch '^[A-Za-z0-9_./=,:+@-]+$') { $_ } else { "'" + $_.Replace("'", "'\''") + "'" } }) -join ' '
+}
+
+# The artifact that holds the full lock diffs of this working directory and
+# these options. Jobs with the same ones write the same diffs, so a later
+# upload may replace an earlier one; the hash keeps other roots and options
+# apart, as services/api and services-api.
+function Get-DiffArtifact {
+    $dir = ($workdir -replace '\\', '/').TrimEnd('/')
+    if ($dir.StartsWith('./')) { $dir = $dir.Substring(2) }
+    if ($dir -eq '.') { $dir = '' }
+    $key = $dir
+    foreach ($arg in $maven) { $key += "`n$arg" }
+    $key += "`n$env:INPUT_PLATFORMS"
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))).Substring(0, 8).ToLowerInvariant()
+    if ($dir) { "raeva-lock-diff-$($dir -replace '[^A-Za-z0-9._-]', '-')-$hash" } else { "raeva-lock-diff-$hash" }
+}
+
+# On a bot's pull request whose lock is stale, writes the lock diff that
+# `raeva sync` would commit. raeva writes it in a copy of the working
+# directory that is removed afterwards, so later steps see the committed lock.
+function Invoke-Proposed {
+    if (-not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request')) -or -not $env:GITHUB_EVENT_PATH -or
+        -not (Test-Path -LiteralPath $env:GITHUB_EVENT_PATH)) { return }
+    $type = ''
+    try { $type = "$((Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json).pull_request.user.type)" } catch { }
+    $lock = Join-Path $workdir 'raeva.lock'
+    if ($type -cne 'Bot' -or -not (Test-Path -LiteralPath $lock)) { return }
+    $copy = Join-Path $runDir 'proposed'
+    New-Item -ItemType Directory -Path $copy | Out-Null
+    Get-ChildItem -LiteralPath $workdir -Force | Where-Object { $_.Name -ne '.git' } | Copy-Item -Destination $copy -Recurse -Force
+    $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms (Join-Path $copy 'raeva.lock') }
+    $arguments = @('-q', '-C', $copy, 'sync') + $maven
+    if ($platforms) { $arguments += @('--platforms', $platforms) }
+    $syncOut = Join-Path $runDir 'proposed.out'
+    $syncErr = Join-Path $runDir 'proposed.err'
+    Write-Host '::group::raeva sync in a copy, for the proposed lock'
+    $code = Invoke-Raeva $arguments $syncOut $syncErr
+    Write-Raw @($syncOut, $syncErr)
+    Write-Host '::endgroup::'
+    Summary "`n### Proposed raeva.lock, not committed"
+    if ($code -ne 0) {
+        Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The error above stands."
+    } else {
+        Summary "`nThis is the lock ``raeva sync`` writes for this pull request. It is not committed, later steps use the committed lock, and the check above still fails. To fix it, run this on the branch and commit raeva.lock:"
+        Fenced (Get-SyncCommand)
+        if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
+            Summary "`nThis job reads the settings file ``$($env:INPUT_SETTINGS.Replace('``', ''))``; run it with a settings file that has the same repositories and profiles."
+        }
+        $diffOut = Join-Path $runDir 'diff.out'
+        $diffErr = Join-Path $runDir 'diff.err'
+        $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $lock, (Join-Path $copy 'raeva.lock')) $diffOut $diffErr
+        if ($diffCode -ne 0) { Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)." }
+        $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
+        $artifactDir = Join-Path $runDir 'lock-diff'
+        New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $artifactDir 'proposed.diff'), "$text`n", [Text.UTF8Encoding]::new($false))
+        $artifact = Get-DiffArtifact
+        Out 'lock-diff-dir' $artifactDir
+        Out 'lock-diff-artifact' $artifact
+        $lines = $text -split "`n"
+        if ($lines.Count -gt 200) {
+            $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"
+        }
+        Fenced $text
+    }
+    Remove-Item -LiteralPath $copy -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function Invoke-Frozen {
     $arguments = @('--json', '-C', $workdir, 'sync', '--frozen') + $maven
     if ($env:INPUT_PLATFORMS) { $arguments += @('--platforms', $env:INPUT_PLATFORMS) }
     $json = Join-Path $runDir 'frozen.json'
     $err = Join-Path $runDir 'frozen.err'
     $code = Invoke-Raeva $arguments $json $err
-    Get-Content -LiteralPath $err | Write-Host
+    Write-Raw @($err)
     Out 'frozen-exit-code' $code
     $envelope = $null
     try { $envelope = Get-Content -LiteralPath $json -Raw | ConvertFrom-Json } catch { }
@@ -140,6 +243,9 @@ function Invoke-Frozen {
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
     Fenced "$message`n`n$hints"
     Write-Warnings $envelope 'sync --frozen'
+    if ($code -eq 7) {
+        try { Invoke-Proposed } catch { Write-Host "No proposed lock: $_" }
+    }
     exit $code
 }
 
@@ -153,23 +259,22 @@ function Get-SarifCategory {
 }
 
 # An upload that code scanning refuses only adds an error annotation, so ask
-# first. Code scanning answers 403 when a private repository has no GitHub
-# Code Security or the token has no security-events access. Any other answer
-# leaves the upload to try.
+# first, with the token the upload uses. Only a 403 that says code scanning
+# is not enabled, as for a private repository without GitHub Code Security,
+# skips the upload; a token that may not read alerts can still upload.
 function Test-SarifUpload {
     if ($env:INPUT_SARIF_UPLOAD -ne 'true' -or -not $env:GITHUB_REPOSITORY) { return }
     $status = 0
     $why = ''
     try {
         $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -Uri "$api/repos/$env:GITHUB_REPOSITORY/code-scanning/alerts?per_page=1" `
-            -Headers @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json' }
+            -Headers @{ Authorization = "Bearer $uploadToken"; Accept = 'application/vnd.github+json' }
         $status = [int]$response.StatusCode
         if ($status -eq 403) { try { $why = "$(($response.Content | ConvertFrom-Json).message)" } catch { } }
     } catch { }
-    if ($status -eq 403) {
+    if ($status -eq 403 -and $why -match 'must be enabled|not enabled') {
         if ($why.Length -gt 200) { $why = $why.Substring(0, 200) }
-        $because = if ($why) { " ($(EscMsg $why))" } else { '' }
-        Write-Output "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403$because. A private repository needs GitHub Code Security, and the job needs security-events: write. The findings are in the job summary; sarif-upload: false skips this check."
+        Write-Output "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(EscMsg $why)). A private repository needs GitHub Code Security. The findings are in the job summary; sarif-upload: false skips this check."
         return
     }
     Out 'sarif-upload' 'true'
@@ -226,7 +331,7 @@ function Invoke-Vuln {
     }
     $arguments += $maven
     $code = Invoke-Raeva $arguments $sarif $err
-    Get-Content -LiteralPath $err | Write-Host
+    Write-Raw @($err)
     Out 'vuln-exit-code' $code
     Summary "`n### Vulnerabilities"
     # An incomplete scan (exit 2 or more) still writes the findings it has, so

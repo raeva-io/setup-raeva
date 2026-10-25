@@ -66,6 +66,7 @@ cat > "$stub" <<'EOF'
 [[ -z "${STUB_ARGS:-}" ]] || { printf '%s\n' "$@" "GH_TOKEN=${GH_TOKEN-unset}" >> "$STUB_ARGS"; }
 case " $* " in
   *" sync --frozen "*)
+    echo '::error title=evil::from sync --frozen' >&2
     printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null},{"code":"HTTP_REPO_BLOCKED","message":"http repository in a POM","context":null}]}}'
     exit 7 ;;
   *" vuln "*" --vex "*)
@@ -80,6 +81,7 @@ case " $* " in
     seq 1 50000
     exit 0 ;;
   *" sync "*)
+    echo '::error title=evil::from raeva sync' >&2
     # A plain sync rewrites the lock in the -C directory.
     while [[ $# -gt 0 && "$1" != -C ]]; do shift; done
     printf '# written again\n' >> "${2:-.}/raeva.lock"
@@ -94,7 +96,7 @@ chmod +x "$stub"
 mkdir -p "$scratch/fake-curl"
 cat > "$scratch/fake-curl/curl" <<'EOF'
 #!/usr/bin/env bash
-cat > /dev/null
+if [[ -n "${STUB_CURL_HEADERS:-}" ]]; then cat >> "$STUB_CURL_HEADERS"; else cat > /dev/null; fi
 body="" url=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -375,6 +377,7 @@ for i in "${!install_variants[@]}"; do
   # cells escaped.
   vsum="$scratch/run-$tag-stub-vex/summary"
   grep -qxF '| Severity | Advisory | Dependency | Fixed in | VEX |' "$vsum" && ok "$tag: findings table" || bad "$tag: findings table"
+  # shellcheck disable=SC2016
   grep -qxF '| High | GHSA-a | pkg:maven/a/b@1\|\`x\` | 2 |  |' "$vsum" && ok "$tag: table cells escaped" || bad "$tag: table cells escaped ($(grep 'GHSA-a' "$vsum"))"
   [[ "$(grep -o 'GHSA-[abc]' "$vsum" | tr -d '\n')" == GHSA-aGHSA-bGHSA-c ]] && ok "$tag: table order" || bad "$tag: table order ($(grep -o 'GHSA-[abc]' "$vsum" | tr -d '\n'))"
   grep -qxF '| Critical | GHSA-c |  |  | suppressed |' "$vsum" && ok "$tag: suppressed row marked" || bad "$tag: suppressed row marked"
@@ -405,7 +408,7 @@ for i in "${!install_variants[@]}"; do
     if [[ -n "$api_port" ]]; then
       # shellcheck disable=SC2086
       run_env "$tag-probe-403" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json INPUT_SARIF_UPLOAD=true \
-        GITHUB_REPOSITORY=o/r GITHUB_API_URL="http://127.0.0.1:$api_port" GH_TOKEN=t $chk scan
+        GITHUB_REPOSITORY=o/r GITHUB_API_URL="http://127.0.0.1:$api_port" UPLOAD_TOKEN=t $chk scan
       expect "$tag: a refused probe does not fail the scan" 0 $?
       [[ -z "$(output_of "$tag-probe-403" sarif-upload)" ]] && ok "$tag: no upload after a 403" || bad "$tag: no upload after a 403"
       [[ $(grep -c '^::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 (Advanced Security must be enabled' "$scratch/run-$tag-probe-403/log") -eq 1 ]] \
@@ -444,41 +447,88 @@ printf 'platform = "macos-aarch64"\n' > "$scratch/base.lock"
 base_sha=$(printf '0%.0s' {1..40})
 printf '{"pull_request":{"base":{"sha":"%s"},"user":{"login":"dependabot[bot]","type":"Bot"}}}' "$base_sha" > "$scratch/event-bot.json"
 printf '{"pull_request":{"base":{"sha":"%s"},"user":{"login":"someone","type":"User"}}}' "$base_sha" > "$scratch/event-user.json"
-run_env pr-diff env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=200 STUB_CURL_BODY="$scratch/base.lock" RAEVA_BIN="$stub" \
-  GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-user.json" GITHUB_REPOSITORY=o/r \
-  INPUT_LOCK_DIFF=only INPUT_WORKING_DIRECTORY=pr-project bash "$here/scripts/check.sh" scan
+pr_diff_in() { # <run name> <working directory under $scratch>
+  run_env "$1" env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=200 STUB_CURL_BODY="$scratch/base.lock" RAEVA_BIN="$stub" \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-user.json" GITHUB_REPOSITORY=o/r \
+    INPUT_LOCK_DIFF=only INPUT_WORKING_DIRECTORY="$2" bash "$here/scripts/check.sh" scan
+}
+pr_diff_in pr-diff pr-project
 expect "bash: lock diff of a pull request" 0 $?
 ddir=$(output_of pr-diff lock-diff-dir)
 [[ $(wc -l < "$ddir/raeva.lock.diff" 2>/dev/null) -eq 50000 ]] && ok "bash: full lock diff in the artifact directory" || bad "bash: full lock diff in the artifact directory"
-[[ "$(output_of pr-diff lock-diff-artifact)" == raeva-lock-diff-pr-project ]] \
+[[ "$(output_of pr-diff lock-diff-artifact)" =~ ^raeva-lock-diff-pr-project-[0-9a-f]{8}$ ]] \
   && ok "bash: artifact named after the working directory" || bad "bash: artifact named after the working directory ($(output_of pr-diff lock-diff-artifact))"
-has "$scratch/run-pr-diff/summary" "the full diff is raeva.lock.diff in the raeva-lock-diff-" && ok "bash: summary points to the artifact" || bad "bash: summary points to the artifact"
+has "$scratch/run-pr-diff/summary" "the full diff is raeva.lock.diff in the raeva-lock-diff-pr-project-" && ok "bash: summary points to the artifact" || bad "bash: summary points to the artifact"
+# Roots whose names map to the same characters keep their own artifacts.
+mkdir -p "$scratch/services/api" "$scratch/services-api"
+cp "$prdir/raeva.lock" "$scratch/services/api/"
+cp "$prdir/raeva.lock" "$scratch/services-api/"
+pr_diff_in pr-diff-a services/api
+pr_diff_in pr-diff-b services-api
+a=$(output_of pr-diff-a lock-diff-artifact)
+b=$(output_of pr-diff-b lock-diff-artifact)
+[[ -n "$a" && -n "$b" && "$a" != "$b" ]] && ok "bash: services/api and services-api keep their own artifacts" || bad "bash: services/api and services-api keep their own artifacts ($a, $b)"
+
+# The probe asks with the job token, which the upload uses, and a 403 that
+# is only about reading alerts leaves the upload to try.
+printf '{"message":"Resource not accessible by integration"}' > "$scratch/403-perm.json"
+run_env probe-perm env PATH="$fake_path" STUB_CURL_STATUS=403 STUB_CURL_BODY="$scratch/403-perm.json" STUB_CURL_HEADERS="$scratch/probe-headers" \
+  RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GH_TOKEN=read-token UPLOAD_TOKEN=job-token \
+  bash "$here/scripts/check.sh" scan
+[[ "$(output_of probe-perm sarif-upload)" == true ]] && ok "bash: upload after a 403 about alert access" || bad "bash: upload after a 403 about alert access"
+grep -qxF 'Authorization: Bearer job-token' "$scratch/probe-headers" && ok "bash: the probe uses the job token" || bad "bash: the probe uses the job token"
+
+# raeva's output reaches the log with workflow commands off.
+between() { # <log> <fixed text>: the text sits between stop-commands and its marker
+  awk -v text="$2" '
+    /^::stop-commands::/ { marker = substr($0, 18); next }
+    marker != "" && $0 == "::" marker "::" { marker = ""; next }
+    index($0, text) { found = 1; inside = (marker != "") }
+    END { exit !(found && inside) }' "$1"
+}
 
 # A bot's pull request with a stale lock: the check fails as before, and the
 # summary also shows the lock raeva sync would write, made in a copy.
-cp "$prdir/raeva.lock" "$scratch/pr-before.lock"
-run_env proposed env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" STUB_ARGS="$scratch/proposed-args" \
-  GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-bot.json" GITHUB_REPOSITORY=o/r \
-  INPUT_CHECK=true INPUT_PROFILES=ci INPUT_SETTINGS=ci.xml INPUT_WORKING_DIRECTORY=pr-project bash "$here/scripts/check.sh" scan
-expect "bash: a stale bot lock still fails the check" 7 $?
-plog="$scratch/run-proposed/log"
-psum="$scratch/run-proposed/summary"
-has "$plog" '^::error file=.*title=raeva sync --frozen (exit 7%2C LOCKFILE_MISMATCH)::' && ok "bash: the original error stays" || bad "bash: the original error stays"
-has "$psum" "^### Proposed raeva.lock, not committed" && ok "bash: proposed lock in the summary" || bad "bash: proposed lock in the summary"
-[[ $(grep -n 'failed with exit 7' "$psum" | cut -d: -f1) -lt $(grep -n 'Proposed raeva.lock' "$psum" | cut -d: -f1) ]] \
-  && ok "bash: the error comes first" || bad "bash: the error comes first"
-grep -qxF "raeva -C pr-project sync --activate-profiles=ci" "$psum" && ok "bash: the fixing command" || bad "bash: the fixing command ($(grep 'raeva -C' "$psum"))"
-cmp -s "$prdir/raeva.lock" "$scratch/pr-before.lock" && ok "bash: the committed lock is untouched" || bad "bash: the committed lock is untouched"
-pdir=$(output_of proposed lock-diff-dir)
-[[ -s "$pdir/proposed.diff" ]] && ok "bash: proposed diff in the artifact directory" || bad "bash: proposed diff in the artifact directory"
-[[ -n "$pdir" && ! -e "$(dirname "$pdir")/proposed" ]] && ok "bash: the copy is removed" || bad "bash: the copy is removed"
-[[ "$(tr '\n' '|' < "$scratch/proposed-args")" == *"|sync|--settings=ci.xml|--activate-profiles=ci|--platforms|linux-x86_64|"* ]] \
-  && ok "bash: the proposed lock keeps the recorded platforms and options" || bad "bash: the proposed lock keeps the recorded platforms and options"
-run_env proposed-user env PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" \
-  GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-user.json" GITHUB_REPOSITORY=o/r \
-  INPUT_CHECK=true INPUT_WORKING_DIRECTORY="$prdir" bash "$here/scripts/check.sh" scan
-expect "bash: a stale lock from a person fails" 7 $?
-has "$scratch/run-proposed-user/summary" "Proposed raeva.lock" && bad "bash: no proposed lock for a person's pull request" || ok "bash: no proposed lock for a person's pull request"
+for i in "${!check_variants[@]}"; do
+  chk=${check_variants[$i]}
+  tag=$([[ $i -eq 0 ]] && echo bash || echo pwsh)
+  cp "$prdir/raeva.lock" "$scratch/pr-before.lock"
+  : > "$scratch/proposed-args-$tag"
+  # shellcheck disable=SC2086
+  run_env "$tag-proposed" env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" STUB_ARGS="$scratch/proposed-args-$tag" \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-bot.json" GITHUB_REPOSITORY=o/r INPUT_LOCK_DIFF=false \
+    INPUT_CHECK=true INPUT_PROFILES=ci INPUT_SETTINGS=ci.xml INPUT_WORKING_DIRECTORY=pr-project $chk scan
+  expect "$tag: a stale bot lock still fails the check" 7 $?
+  plog="$scratch/run-$tag-proposed/log"
+  psum="$scratch/run-$tag-proposed/summary"
+  has "$plog" '^::error file=.*title=raeva sync --frozen (exit 7%2C LOCKFILE_MISMATCH)::' && ok "$tag: the original error stays" || bad "$tag: the original error stays"
+  has "$psum" "^### Proposed raeva.lock, not committed" && ok "$tag: proposed lock in the summary" || bad "$tag: proposed lock in the summary"
+  [[ $(grep -n 'failed with exit 7' "$psum" | cut -d: -f1) -lt $(grep -n 'Proposed raeva.lock' "$psum" | cut -d: -f1) ]] \
+    && ok "$tag: the error comes first" || bad "$tag: the error comes first"
+  grep -qxF "raeva -C pr-project sync --settings=ci.xml --activate-profiles=ci" "$psum" && ok "$tag: the fixing command" || bad "$tag: the fixing command ($(grep 'raeva -C' "$psum"))"
+  has "$psum" "more lines; the full diff is proposed.diff in the raeva-lock-diff-pr-project-" && ok "$tag: proposed diff cut, with the artifact named" || bad "$tag: proposed diff cut, with the artifact named"
+  cmp -s "$prdir/raeva.lock" "$scratch/pr-before.lock" && ok "$tag: the committed lock is untouched" || bad "$tag: the committed lock is untouched"
+  pdir=$(output_of "$tag-proposed" lock-diff-dir)
+  [[ $(wc -l < "$pdir/proposed.diff" 2>/dev/null) -eq 50000 ]] && ok "$tag: full proposed diff in the artifact directory" || bad "$tag: full proposed diff in the artifact directory"
+  [[ -n "$pdir" && ! -e "$(dirname "$pdir")/proposed" ]] && ok "$tag: the copy is removed" || bad "$tag: the copy is removed"
+  [[ "$(tr '\n' '|' < "$scratch/proposed-args-$tag")" == *"|sync|--settings=ci.xml|--activate-profiles=ci|--platforms|linux-x86_64|"* ]] \
+    && ok "$tag: the proposed lock keeps the recorded platforms and options" || bad "$tag: the proposed lock keeps the recorded platforms and options"
+  between "$plog" "::error title=evil::from raeva sync" && ok "$tag: raeva sync output cannot run workflow commands" || bad "$tag: raeva sync output cannot run workflow commands"
+  between "$plog" "::error title=evil::from sync --frozen" && ok "$tag: frozen check output cannot run workflow commands" || bad "$tag: frozen check output cannot run workflow commands"
+  # A settings file of the runner is left out of the command, and said so.
+  # shellcheck disable=SC2086
+  run_env "$tag-proposed-abs" env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-bot.json" GITHUB_REPOSITORY=o/r INPUT_LOCK_DIFF=false \
+    INPUT_CHECK=true INPUT_SETTINGS="$scratch/runner-settings.xml" INPUT_WORKING_DIRECTORY=pr-project $chk scan
+  grep -qxF "raeva -C pr-project sync" "$scratch/run-$tag-proposed-abs/summary" && ok "$tag: runner settings left out of the command" || bad "$tag: runner settings left out of the command"
+  has "$scratch/run-$tag-proposed-abs/summary" "This job reads the settings file" && ok "$tag: the summary names the settings file" || bad "$tag: the summary names the settings file"
+  # shellcheck disable=SC2086
+  run_env "$tag-proposed-user" env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-user.json" GITHUB_REPOSITORY=o/r INPUT_LOCK_DIFF=false \
+    INPUT_CHECK=true INPUT_WORKING_DIRECTORY=pr-project $chk scan
+  expect "$tag: a stale lock from a person fails" 7 $?
+  has "$scratch/run-$tag-proposed-user/summary" "Proposed raeva.lock" && bad "$tag: no proposed lock for a person's pull request" || ok "$tag: no proposed lock for a person's pull request"
+done
 
 # A relock whose lock diff is longer than a pipe buffer still succeeds, with
 # the summary cut to 200 lines.

@@ -19,8 +19,6 @@ bad() { fail=$((fail + 1)); echo "FAIL $1"; }
 export HOME="$t/home" RAEVA_HOME="$t/raeva-home" GIT_CONFIG_NOSYSTEM=1
 mkdir -p "$HOME"
 git config --global init.defaultBranch main
-git config --global user.name bot
-git config --global user.email bot@example.invalid
 git config --global advice.detachedHead false
 
 # The run: blocks, by step id or name, straight from the workflow file.
@@ -82,16 +80,32 @@ git clone --quiet "$t/remote.git" "$t/dev"
 rsync -a --exclude .git "$PROJECT/" "$t/dev/"
 mkdir -p "$t/dev/services/api"
 rsync -a --exclude .git "$PROJECT/" "$t/dev/services/api/"
-(cd "$t/dev" && git add -A && git commit --quiet -m init && git push --quiet origin main)
-platforms=$(cd "$t/dev" && "$RAEVA_BUILD" --json lock info | jq -r '[.data.platforms[].platform] | join(",")')
+(cd "$t/dev" && git add -A && git -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet -m init && git push --quiet origin main)
+platforms=$(cd "$t/dev" && "$RAEVA_BUILD" --json lock info | jq -r '[.data.platforms[].platform] | unique | join(",")')
 echo "locked platforms: $platforms"
 
 # The bot's pull request: the same POM change in both roots.
 branch=dependabot/maven/com.google.code.gson-gson-2.13.1
 (cd "$t/dev" && git switch --quiet -c "$branch" &&
   sed -i '/<artifactId>gson<\/artifactId>/{n;s|<version>[^<]*</version>|<version>2.13.1</version>|}' pom.xml services/api/pom.xml &&
-  git commit --quiet -am "Bump gson to 2.13.1" && git push --quiet origin "$branch")
+  git -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet -am "Bump gson to 2.13.1" && git push --quiet origin "$branch")
 head_sha=$(git -C "$t/dev" rev-parse HEAD)
+
+# Report-only checks propose a lock without changing the checked-out files.
+mkdir -p "$t/report-temp"
+cp "$t/dev/raeva.lock" "$t/report-before.lock"
+(cd "$t/dev" && env RAEVA_BIN="$RAEVA_BUILD" INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_LOCK_DIFF=false \
+  GITHUB_OUTPUT="$t/report.out" GITHUB_STEP_SUMMARY="$t/report.summary" RUNNER_TEMP="$t/report-temp" \
+  bash "$here/scripts/check.sh" scan > "$t/report.log" 2>&1)
+code=$?
+[[ $code -eq 0 ]] && grep -qx 'frozen-exit-code=7' "$t/report.out" \
+  && ok "report-only passes a stale lock and keeps exit 7" || { bad "report-only check (exit $code)"; cat "$t/report.log"; }
+report_diff=$(sed -n 's/^proposed-diff=//p' "$t/report.out")
+[[ -s "$report_diff" ]] && grep -q gson "$report_diff" && grep -q gson "$t/report.summary" \
+  && grep -qx 'fix-command=raeva sync' "$t/report.out" \
+  && ok "report-only exposes the proposed diff and fix command" || bad "report-only diff and command"
+cmp -s "$t/dev/raeva.lock" "$t/report-before.lock" \
+  && ok "report-only keeps the committed lock" || bad "report-only changed the lock"
 
 run_relock_job() { # <workdir> <root> <job index>
   git clone --quiet "$t/remote.git" "$1" && git -C "$1" checkout --quiet "$head_sha"
@@ -145,7 +159,7 @@ code=$?
 git clone --quiet --branch "$branch" "$t/remote.git" "$t/after"
 [[ "$(git -C "$t/after" log -1 --format=%s)" == "Update raeva.lock [dependabot skip]" ]] && ok "commit message lets Dependabot rebase" || bad "commit message"
 [[ "$(git -C "$t/after" diff --name-only HEAD~1 HEAD | tr '\n' ' ')" == "raeva.lock services/api/raeva.lock " ]] && ok "one commit changes both locks and nothing else" || bad "one commit changes both locks and nothing else"
-[[ "$(git -C "$t/after" log -1 --format=%ae)" == "41898282+github-actions[bot]@users.noreply.github.com" ]] && ok "commit author is github-actions[bot]" || bad "commit author"
+[[ "$(git -C "$t/after" log -1 --format=%ae)" == "285838596+torutofu@users.noreply.github.com" ]] && ok "commit author is torutofu" || bad "commit author"
 (cd "$t/after" && "$RAEVA_BUILD" -q sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "branch passes --frozen for every platform" || bad "branch passes --frozen for every platform"
 (cd "$t/after" && "$RAEVA_BUILD" -q -C services/api sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "second root passes --frozen" || bad "second root passes --frozen"
 
@@ -187,7 +201,7 @@ code=$?
   && ok "all unchanged succeeds without checkout or commit" || bad "all unchanged succeeds without checkout or commit (exit $code)"
 
 # The bot pushes again before a push job for the old head runs.
-git -C "$t/dev" commit --quiet --allow-empty -m "Bot update"
+git -C "$t/dev" -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet --allow-empty -m "Bot update"
 git -C "$t/dev" push --quiet origin "$branch"
 run_push_job "$t/push-again" "$root_tar" "$unchanged"
 code=$?
@@ -299,7 +313,7 @@ git clone --quiet "$t/remote.git" "$t/diff-checksums"
 git -C "$t/diff-checksums" checkout --quiet "$head_sha"
 mkdir -p "$t/diff-checksums/.mvn/checksums" "$t/diff-checksums.temp"
 printf 'x\n' > "$t/diff-checksums/.mvn/checksums/checksums.sha256"
-(cd "$t/diff-checksums" && git add .mvn/checksums/checksums.sha256 && git commit --quiet -m "Add checksums")
+(cd "$t/diff-checksums" && git add .mvn/checksums/checksums.sha256 && git -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet -m "Add checksums")
 cp "$t/after/raeva.lock" "$t/diff-checksums/"
 (cd "$t/diff-checksums" && env ROOT=. INDEX=0 RUNNER_TEMP="$t/diff-checksums.temp" GITHUB_OUTPUT="$t/diff-checksums.out" \
   bash -e "$t/diff.sh" > "$t/diff-checksums.log" 2>&1)
@@ -312,7 +326,7 @@ mkdir -p "$t/mac-only" && cp "$PROJECT/pom.xml" "$t/mac-only/"
 "$RAEVA_BUILD" -q -C "$t/mac-only" sync --platforms macos-aarch64 >/dev/null 2>&1
 mkdir -p "$t/mac-only.temp"
 (cd "$t/mac-only" && env RAEVA_BIN="$RAEVA_BUILD" RUNNER_TEMP="$t/mac-only.temp" bash "$here/scripts/check.sh" relock > "$t/mac-only.log" 2>&1)
-only=$("$RAEVA_BUILD" --json -C "$t/mac-only" lock info | jq -r '[.data.platforms[].platform] | join(",")')
+only=$("$RAEVA_BUILD" --json -C "$t/mac-only" lock info | jq -r '[.data.platforms[].platform] | unique | join(",")')
 [[ "$only" == macos-aarch64 ]] && ok "relock adds no platform" || bad "relock adds no platform ($only)"
 
 relock_in() { # <dir>: runs check.sh relock there with its own outputs
@@ -321,6 +335,43 @@ relock_in() { # <dir>: runs check.sh relock there with its own outputs
   (cd "$1" && env RAEVA_BIN="$RAEVA_BUILD" RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" \
     GITHUB_STEP_SUMMARY="$1.summary" bash "$here/scripts/check.sh" relock > "$1.log" 2>&1)
 }
+
+# JDK selection stays in config; --platforms must contain only OS/architecture.
+mkdir -p "$t/jdks"
+cp "$PROJECT/pom.xml" "$t/jdks/"
+printf '[lock]\njdks = ["17", "21"]\n' > "$t/jdks/raeva.toml"
+"$RAEVA_BUILD" -q -C "$t/jdks" sync --platforms linux-x86_64,macos-aarch64 > "$t/jdks-setup.log" 2>&1
+code=$?
+[[ $code -eq 0 ]] && ok "writes a lock for two JDKs and two platforms" || { bad "multi-JDK setup (exit $code)"; cat "$t/jdks-setup.log"; }
+lock_targets() {
+  "$RAEVA_BUILD" --json -C "$1" lock info | jq -r '[.data.platforms[] | .platform + "@" + .jdk] | sort | join(",")'
+}
+expected_targets=linux-x86_64@17,linux-x86_64@21,macos-aarch64@17,macos-aarch64@21
+relock_in "$t/jdks"
+code=$?
+[[ $code -eq 0 && "$(lock_targets "$t/jdks")" == "$expected_targets" ]] \
+  && ok "relock preserves every platform and JDK" || { bad "multi-JDK relock (exit $code)"; cat "$t/jdks.log"; }
+sed 's/^conflict //' > "$t/jdks/raeva.lock" <<'LOCK'
+schema_version = 7
+conflict <<<<<<< ours
+[[platforms]]
+targets = ["linux-x86_64@17", "linux-x86_64@21"]
+conflict =======
+[[platforms]]
+targets = [
+  "macos-aarch64@17",
+  "macos-aarch64@21",
+]
+conflict >>>>>>> theirs
+[[inputs]]
+target = "linux-x86_64@17"
+LOCK
+relock_in "$t/jdks"
+code=$?
+[[ $code -eq 0 && "$(lock_targets "$t/jdks")" == "$expected_targets" ]] \
+  && ok "conflicted target text preserves every platform and JDK" || { bad "multi-JDK conflict (exit $code)"; cat "$t/jdks.log"; }
+(cd "$t/jdks" && "$RAEVA_BUILD" -q sync --frozen >/dev/null 2>&1) \
+  && ok "regenerated multi-JDK lock passes --frozen" || bad "multi-JDK frozen check"
 
 # A lock with merge conflict markers, as a rebase leaves it: relock reads the
 # platforms from its text and writes it again; strict parsing would refuse it.

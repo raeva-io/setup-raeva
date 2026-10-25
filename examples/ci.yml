@@ -40,10 +40,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
-      # Fails when raeva.lock no longer matches the POMs, for every platform
-      # the lock records. On a pull request, the job summary lists what the
-      # pull request changes in the lock.
+      # Reports lock changes for every recorded platform. Remove check-mode
+      # when you want lock changes to fail the job. Other check errors fail.
       - uses: raeva-io/setup-raeva@v1.0.0
         with:
           version: 0.5.0
           check: true
+          check-mode: report-only

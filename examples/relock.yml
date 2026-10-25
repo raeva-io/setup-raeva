@@ -203,8 +203,8 @@ jobs:
           done
           [[ ${#files[@]} -gt 0 ]] || { echo "::error::No files changed"; exit 1; }
           git add -- "${files[@]}"
-          git -c user.name='github-actions[bot]' \
-              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+          git -c user.name=torutofu \
+              -c user.email=285838596+torutofu@users.noreply.github.com \
               commit --quiet -m 'Update raeva.lock [dependabot skip]'
           # The credential goes to git through its environment, not its
           # arguments.

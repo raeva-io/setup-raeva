@@ -39,15 +39,24 @@ jobs:
         with:
           version: 0.5.0
           check: true
+          check-mode: report-only
 ```
 
 The job runs `raeva sync --frozen`: it downloads the locked artifacts into
-the store and fails when `raeva.lock` no longer matches the POMs. It checks
-every platform the lock records, whatever the runner's OS, so one Linux job
+the store and checks whether `raeva.lock` matches the POMs. Start with
+`check-mode: report-only`: stale or drifted locks produce a proposed diff and
+a fix command in the job summary. The `proposed-diff` output is the path of
+the full diff; `fix-command` is the command to regenerate the lock. The
+committed lock stays unchanged. Check errors, such as invalid locks or
+failed downloads, still fail the job.
+
+Remove `check-mode` when you want lock changes to fail the job. Its default
+is `blocking`. The check covers every platform the lock records, whatever
+the runner's OS, so one Linux job
 checks a lock written on a Mac. On a pull request, the job summary lists what
 the pull request changes in the lock. The `merge_group` trigger lets the
-check run in a merge queue. Leave the check optional until bot pull requests
-get their lock commits (see "Bot pull requests"), then make it required.
+check run in a merge queue. Add bot lock commits before you make a blocking
+check required (see "Bot pull requests").
 
 Locally, write the lock and tell git how to merge it:
 
@@ -76,8 +85,8 @@ Add them one at a time, after the check works.
 
 | File | What it does |
 | --- | --- |
-| `examples/ci.yml` | The check next to an unchanged Maven build. |
-| `examples/vuln.yml` | Scans the lock. Pull requests get a report; a weekly run and pushes to main fail on findings at `high` or above. |
+| `examples/ci.yml` | A report-only check next to an unchanged Maven build. |
+| `examples/vuln.yml` | Scans the lock. Pull requests fail on new findings at `high` or above; a weekly run and pushes to main check all findings. |
 | `examples/drift.yml` | For SNAPSHOT or version range dependencies only: a scheduled job that resolves again and fails when the result differs from the committed lock. |
 | `examples/relock.yml` | Writes `raeva.lock` again on Dependabot pull requests and pushes it to the PR branch. |
 | `examples/private.yml` | A public repository whose build reads a private Maven repository, with a credential-free job for fork pull requests. |
@@ -145,15 +154,33 @@ commit, drops the lock commit, and the workflow writes the lock again.
 Hosted Renovate (the Mend app) stays at Tier 3 for now. It stops rebasing a
 branch that has another author's commit. Its `gitIgnoredAuthors` setting with
 the lock commit's author,
-`["41898282+github-actions[bot]@users.noreply.github.com"]`, should let it
+`["285838596+torutofu@users.noreply.github.com"]`, should let it
 keep rebasing, but that is not yet verified through a conflict and a rebase,
 so `relock.yml` runs only for Dependabot. A self-hosted Renovate writes the
 lock itself with `postUpgradeTasks`, as in `examples/renovate-self-hosted.json`;
 its admin installs raeva on the Renovate host and allows the command in the
 global `allowedCommands`, such as `["^raeva sync$"]`.
 
-The workflow never pushes to main, never uses `pull_request_target`, and has
-no option that lets a stale lock pass.
+The relock workflow never pushes to main or uses `pull_request_target`.
+
+## Vulnerabilities on pull requests
+
+With `vuln: true`, a pull request scan reads `raeva.lock` from the PR base
+commit and passes it as `raeva vuln --baseline <lockfile>`. Only new findings
+at `vuln-fail-on` or above fail the job. Existing findings stay in the SARIF
+log and job summary. The summary labels each compared result `new` or
+`existing`, including results suppressed by VEX. Pushes and scheduled runs
+check all findings.
+
+The action reads the base commit's Git objects through the GitHub API with
+`contents: read`. It neither checks out the base tree nor runs its code.
+This also works with shallow checkouts and fork PRs. Each `working-directory`
+uses its own base lock, independently of `lock-diff`.
+
+If the base tree has no lock for that root, the action prints a notice and
+scans with `--fail-on never`. Scan errors still fail the job. A failed fetch,
+an unreadable lock, or a symlink at the lock path fails instead of skipping
+the baseline. `lock-diff: only` still skips the scan.
 
 ## SNAPSHOT dependencies
 
@@ -205,8 +232,8 @@ The `settings`, `profiles` and `properties` inputs pass `-s`, `-P` and `-D`
 to every raeva command, as for `mvn`. Use them only for options that change
 resolution, such as a CI profile or a property that a profile activation or a
 version reads, and pass the same ones to `raeva sync` when you write the lock.
-Every `-D` and `-P` is an input of the lock, so a build flag such as
-`-DskipTests` that the lock was written without fails the check. Keep build
+Only `-D` names read by the models or settings are lock inputs. An unused
+build flag such as `-DskipTests` does not invalidate the lock. Keep build
 flags in the Maven step.
 
 ## Other CI systems
@@ -223,8 +250,8 @@ curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.0/sha256.sum
 
 Check it against the release's build attestation once, where `gh` is
 installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
---repo raeva-io/raeva`. Release builds need glibc, so use a Debian or Ubuntu
-based image, not Alpine.
+--repo raeva-io/raeva`. For Alpine or another musl image, select the
+`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` archive instead.
 
 ## What the action does
 
@@ -247,7 +274,9 @@ based image, not Alpine.
    its end when the key missed.
 6. With `check: true`, runs `raeva sync --frozen`. A failure gives an error
    annotation on `raeva.lock` with the error code, the changes, and raeva's
-   hints. raeva's warnings become one annotation per warning code, except
+   hints. With `check-mode: report-only`, lock changes produce a warning,
+   a proposed diff, and a fix command; other errors still fail. raeva's
+   warnings become one annotation per warning code, except
    `HTTP_REPO_BLOCKED`, which only the job summary lists. On a bot's pull
    request with a stale lock, the summary also shows the proposed lock, and
    the full proposed diff goes to an artifact, `raeva-lock-proposed-`
@@ -259,13 +288,16 @@ based image, not Alpine.
    summary names it. Linux and macOS.
 8. With `vuln: true`, runs `raeva vuln --format sarif`, writes a findings
    table to the job summary, uploads the log to code scanning, and then fails
-   the job if a finding meets `vuln-fail-on`. An incomplete scan uploads the
+   the job if a finding meets `vuln-fail-on`. Pull requests gate only new
+   findings against the base lock, as described above. An incomplete scan uploads the
    findings it has and fails the job. Before the upload, the action asks code
    scanning with the job token; when it answers that code scanning is not
    enabled, as in a private repository without GitHub Code Security, the
    upload is skipped with one notice.
 9. With `relock: true`, runs `raeva sync` for every platform the lock records,
-   read from the lock text so a conflicted lock is written again. The action
+   read from schema target arrays and input records so conflicted locks can
+   be written again. JDK suffixes stay in the lock; sync reads the target JDKs
+   and `raeva.toml`. Keep `[lock] jdks` in that config for a JDK matrix. The action
    never commits or pushes; see `examples/relock.yml`.
 
 The action has no option to skip verification, and it never runs an installer
@@ -282,6 +314,7 @@ shell installer skips the check when `sha256sum` is missing.
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |
 | `working-directory` | `.` | The directory with the root `pom.xml` and `raeva.lock`. |
 | `check` | `false` | Run `raeva sync --frozen`. |
+| `check-mode` | `blocking` | With `check: true`, use `report-only` to report lock changes with a proposed diff and fix command. Other check errors still fail. |
 | `platforms` | empty | Platforms for `check` and `relock`, such as `linux-x86_64,macos-aarch64`. Empty means every platform the lock records. |
 | `settings` | empty | A Maven settings file, relative to the workspace, that `check`, `vuln` and `relock` read in place of `~/.m2/settings.xml`, passed as `-s`. |
 | `profiles` | empty | Maven profile ids, comma separated (`ci,!slow`), passed as `-P`. Only profiles that change resolution. |
@@ -300,22 +333,33 @@ shell installer skips the check when `sha256sum` is missing.
 ## Outputs
 
 `version`, `bin-dir`, `raeva` (full path of the binary),
-`relocked-platforms`, `cache-hit`, `frozen-exit-code`, `sarif-file`,
-`sarif-category`, and `vuln-findings`.
+`relocked-platforms`, `cache-hit`, `frozen-exit-code`, `proposed-diff`,
+`fix-command`, `sarif-file`, `sarif-category`, and `vuln-findings`.
+
+`proposed-diff` is the path of `proposed.diff`, kept until the job ends and
+uploaded as an artifact. `fix-command` includes the job's Maven option names.
+Property values appear as `<value>` placeholders; replace them before running
+the command. An absolute settings path is omitted, with a note in the
+summary.
+`frozen-exit-code` keeps the original check result, including 7 when
+report-only mode allows lock changes.
 
 ## Runners
 
 | Runner | Build used | Scripts |
 | --- | --- | --- |
-| Linux x64 and ARM64 | `x86_64-` or `aarch64-unknown-linux-gnu` | bash |
+| Linux x64 and ARM64 (glibc) | `x86_64-` or `aarch64-unknown-linux-gnu` | bash |
+| Linux x64 and ARM64 (musl, including Alpine) | `x86_64-` or `aarch64-unknown-linux-musl` | bash |
 | macOS x64 and ARM64 | `x86_64-` or `aarch64-apple-darwin` | bash |
 | Windows x64 | `x86_64-pc-windows-msvc` | pwsh |
 | Windows ARM64 | `x86_64-pc-windows-msvc` under emulation | pwsh |
 
 On Windows the action installs, caches, and runs `check`, with the proposed
 lock, and `vuln`; `relock` and `lock-diff` need Linux or macOS, and
-`relock: true` and `lock-diff: only` fail there. Release builds need glibc.
-The action refuses a musl system, such as an Alpine container.
+`relock: true` and `lock-diff: only` fail there. PR vulnerability baselines
+and report-only lock checks work in both shells. On Linux, an Alpine release
+file or a musl `ldd --version` reply selects the musl archive. Containers
+need Bash, curl, tar, and jq, plus a SHA-256 tool.
 `verify: attestation` needs `gh`, which every GitHub-hosted image has. On a
 self-hosted runner without `gh`, set `verify: sha256`.
 
@@ -346,14 +390,14 @@ cache grows until GitHub evicts it.
 - Every input reaches the scripts as an environment variable, never as script
   text.
 - `token` goes to the install step, for `gh`, and to the check step, which
-  reads the base commit's lock through the contents API. The check step also
+  reads the base commit's lock through the GitHub API. The check step also
   gets the job token, to ask code scanning whether it takes an upload. raeva
   never sees either, and neither needs a write scope from the action.
 - raeva's output quotes POM and repository data, so the action replays it
   with workflow commands turned off.
 - Text from raeva quotes POM and repository data, so the summary puts it in a
   fence it cannot close, and escapes Markdown in the findings table.
-- The proposed lock on a bot's pull request comes from a `raeva sync` in a
+- The proposed lock for report-only checks and bot pull requests comes from a `raeva sync` in a
   copy of the working directory, removed before the step ends.
 - In `examples/relock.yml`, the push job gives git its token through the
   environment, not the command line.
@@ -376,6 +420,9 @@ composite action:
   release with its attestation. It needs `RAEVA_BUILD`, `PROJECT` (a project
   with a three-platform lock), and `VULN_PROJECT`; `PWSH`, `GH_TOKEN`, and
   `RELEASE_VERSION` enable more tests.
+- `test/check.sh` tests report-only checks and PR baselines with fixed CLI
+  and API replies. `PWSH` enables the same cases in PowerShell.
+- `test/install.sh` tests glibc and musl selection with local release archives.
 - `test/relock.sh` runs the `run:` blocks of `examples/relock.yml` against a
   local bare repository with two Maven roots, including tampered artifacts
   and a lock with merge conflict markers. It needs `RAEVA_BUILD` and

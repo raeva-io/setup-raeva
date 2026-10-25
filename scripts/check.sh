@@ -20,6 +20,9 @@ upload_token="${UPLOAD_TOKEN:-}"
 unset GH_TOKEN UPLOAD_TOKEN
 api="${GITHUB_API_URL:-https://api.github.com}"
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
+check_mode="${INPUT_CHECK_MODE:-blocking}"
+base_lock=""
+base_missing=false
 
 # A directory per invocation, so two roots checked in one job keep their own
 # SARIF logs and lock diffs until the upload steps read them.
@@ -100,7 +103,11 @@ sync_command() {
   [[ "$workdir" == . || "$workdir" == ./ ]] || cmd+=(-C "$workdir")
   cmd+=(sync)
   for arg in ${maven[@]+"${maven[@]}"}; do
-    [[ "$arg" == --settings=/* ]] || cmd+=("$arg")
+    case "$arg" in
+      --settings=/*) continue ;;
+      --define=*) arg="${arg#--define=}"; arg="--define=${arg%%=*}=<value>" ;;
+    esac
+    cmd+=("$arg")
   done
   [[ -z "${INPUT_PLATFORMS:-}" ]] || cmd+=(--platforms "$INPUT_PLATFORMS")
   local word line=""
@@ -134,11 +141,25 @@ warnings() {
   fenced "$(printf '%s\n' "$lines" | tr '\t' ' ')"
 }
 
-# The platforms a lock records, read as text, since a malformed or
-# conflicted lock still names them.
+# Read schema targets as text, including both sides of a merge conflict.
+# --platforms takes OS/architecture pairs; sync reads the JDKs itself.
 lock_platforms() {
   [[ -f "$1" ]] || return 0
-  sed -n 's/^platform = "\([a-z0-9_-]*\)"[[:space:]]*$/\1/p' "$1" | awk '!seen[$0]++' | paste -sd, -
+  awk '
+    /^[[:space:]]*targets[[:space:]]*=[[:space:]]*\[/ { targets = 1 }
+    targets || /^[[:space:]]*target[[:space:]]*=/ {
+      rest = $0
+      while (match(rest, /"[^"]*"/)) {
+        name = substr(rest, RSTART + 1, RLENGTH - 2)
+        rest = substr(rest, RSTART + RLENGTH)
+        if (name !~ /^[A-Za-z0-9_]+-[A-Za-z0-9_]+(@[A-Za-z0-9._+-]+)?$/) continue
+        if (index(name, "@") && length(substr(name, index(name, "@") + 1)) > 32) continue
+        sub(/@.*/, "", name)
+        if (!seen[name]++) print name
+      }
+    }
+    /\]/ { targets = 0 }
+  ' "$1" | paste -sd, -
 }
 
 # The name of an artifact with one lock diff of this working directory.
@@ -165,8 +186,8 @@ diff_artifact() { # <prefix> <more of the key>
 }
 
 # Writes `raeva lock diff <old> <new>` to the job summary, and for the pull
-# request diff or the proposed lock the full text to its artifact too. Never
-# fails the step: the frozen check reports a lock that cannot be read.
+# request diff or the proposed lock the full text to its artifact too. It
+# propagates comparison errors for report-only proposed locks.
 diff_summary() { # <title, or empty for none> <old> <new> [diff|proposed]
   local text code=0 file="" dir="" name="" more="run 'raeva lock diff' locally"
   case "${4:-}" in
@@ -176,6 +197,7 @@ diff_summary() { # <title, or empty for none> <old> <new> [diff|proposed]
       out lock-diff-artifact "$name" ;;
     proposed)
       file=proposed.diff dir="$run/proposed-diff" name=$(diff_artifact raeva-lock-proposed "${JAVA_HOME:-}")
+      out proposed-diff "$dir/$file"
       out proposed-dir "$dir"
       out proposed-artifact "$name" ;;
   esac
@@ -185,8 +207,8 @@ diff_summary() { # <title, or empty for none> <old> <new> [diff|proposed]
     printf '\n`raeva lock diff` could not compare the locks (exit %s).\n' "$code" >> "$summary"
   fi
   if [[ -n "$file" ]]; then
-    mkdir -p "$dir"
-    printf '%s\n' "$text" > "$dir/$file"
+    mkdir -p "$dir" || return $?
+    printf '%s\n' "$text" > "$dir/$file" || return $?
     more="the full diff is $file in the $name artifact"
   fi
   local lines
@@ -196,19 +218,26 @@ diff_summary() { # <title, or empty for none> <old> <new> [diff|proposed]
     text="$(printf '%s\n' "$text" | sed -n '1,200p')"$'\n'"... $((lines - 200)) more lines; $more"
   fi
   fenced "$text"
+  if [[ "${4:-}" == proposed && "$check_mode" == report-only ]]; then return "$code"; fi
+  return 0
 }
 
-# On a bot's pull request whose lock is stale, writes the lock diff that
+# For report-only checks or a bot's stale lock, writes the lock diff that
 # `raeva sync` would commit. raeva writes it in a copy of the working
 # directory that is removed afterwards, so later steps see the committed lock.
 proposed() {
-  [[ "${GITHUB_EVENT_NAME:-}" == pull_request* && -f "${GITHUB_EVENT_PATH:-}" ]] || return 0
-  command -v jq >/dev/null || return 0
-  [[ "$(jq -r '.pull_request.user.type // empty' "$GITHUB_EVENT_PATH")" == Bot ]] || return 0
+  if [[ "$check_mode" != report-only ]]; then
+    [[ "${GITHUB_EVENT_NAME:-}" == pull_request* && -f "${GITHUB_EVENT_PATH:-}" ]] || return 0
+    command -v jq >/dev/null || return 0
+    [[ "$(jq -r '.pull_request.user.type // empty' "$GITHUB_EVENT_PATH")" == Bot ]] || return 0
+  fi
   [[ -f "$workdir/raeva.lock" ]] || return 0
   local copy="$run/proposed" platforms="${INPUT_PLATFORMS:-}" code=0
-  mkdir -p "$copy"
-  tar -C "$workdir" --exclude=.git -cf - . | tar -C "$copy" -xf -
+  out fix-command "$(sync_command)"
+  mkdir -p "$copy" || return $?
+  tar -C "$workdir" --exclude=.git -cf - . | tar -C "$copy" -xf - || {
+    code=$?; rm -rf "${copy:?}"; return "$code"
+  }
   [[ -n "$platforms" ]] || platforms=$(lock_platforms "$copy/raeva.lock")
   local args=(-q -C "$copy" sync ${maven[@]+"${maven[@]}"})
   [[ -z "$platforms" ]] || args+=(--platforms "$platforms")
@@ -217,16 +246,20 @@ proposed() {
   echo "::endgroup::"
   printf '\n### Proposed raeva.lock, not committed\n' >> "$summary"
   if [[ $code -ne 0 ]]; then
-    printf '\n`raeva sync` could not write a proposed lock (exit %s); see the step log. The error above stands.\n' "$code" >> "$summary"
+    printf '\n`raeva sync` could not write a proposed lock (exit %s); see the step log. The check cannot complete.\n' "$code" >> "$summary"
   else
-    printf '\nThis is the lock `raeva sync` writes for this pull request. It is not committed, later steps use the committed lock, and the check above still fails. To fix it, run this on the branch and commit raeva.lock:\n' >> "$summary"
+    printf '\nThis is the lock `raeva sync` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:\n' >> "$summary"
     fenced "$(sync_command)"
+    if [[ -n "${INPUT_PROPERTIES:-}" ]]; then
+      printf '\nReplace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.\n' >> "$summary"
+    fi
     if [[ "${INPUT_SETTINGS:-}" == /* ]]; then
       printf '\nThis job reads the settings file `%s`; run it with a settings file that has the same repositories and profiles.\n' "${INPUT_SETTINGS//\`/}" >> "$summary"
     fi
-    diff_summary "" "$workdir/raeva.lock" "$copy/raeva.lock" proposed
+    diff_summary "" "$workdir/raeva.lock" "$copy/raeva.lock" proposed || code=$?
   fi
-  rm -rf "$copy"
+  rm -rf "${copy:?}"
+  return "$code"
 }
 
 frozen() {
@@ -252,11 +285,20 @@ frozen() {
   [[ -n "$hints" ]] || hints=$(hint_for "$ecode")
   local lock_path="$workdir/raeva.lock"
   lock_path="${lock_path#./}"
-  annotate error "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" "$err"$'\n'"$hints"
+  local level=error
+  [[ "$check_mode" != report-only || $code -ne 7 ]] || level=warning
+  annotate "$level" "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" "$err"$'\n'"$hints"
   printf '### raeva\n\n`raeva sync --frozen` failed with exit %s (%s).\n' "$code" "${ecode:-no code}" >> "$summary"
   fenced "$err"$'\n\n'"$hints"
   warnings "$json" "sync --frozen"
-  [[ $code -ne 7 ]] || proposed || true
+  if [[ $code -eq 7 ]]; then
+    if [[ "$check_mode" == report-only ]]; then
+      printf '\nReport-only mode: lock changes do not fail this job.\n' >> "$summary"
+      proposed
+      return
+    fi
+    proposed || true
+  fi
   exit "$code"
 }
 
@@ -302,11 +344,15 @@ findings_table() {
     [.runs[].results[]?
       | {sev: (.properties.severity // "Unknown"), id: (.ruleId // ""),
          dep: (.properties.dependencyPurl // ""), fixed: (.properties.fixedVersion // ""),
-         vex: ((.suppressions // []) | length > 0)}]
+         state: (.baselineState // ""), vex: ((.suppressions // []) | length > 0)}]
     | sort_by(.vex, (.sev | rank), .id)
+    | any(.[]; .state != "") as $compared
     | if length == 0 then empty else
-        "", "| Severity | Advisory | Dependency | Fixed in | VEX |", "| --- | --- | --- | --- | --- |",
-        (.[:100][] | "| \(.sev | cell) | \(.id | cell) | \(.dep | cell) | \(.fixed | cell) | \(if .vex then "suppressed" else "" end) |"),
+        "", ("| Severity | Advisory | Dependency | Fixed in | " + (if $compared then "Baseline | " else "" end) + "VEX |"),
+        ("| --- | --- | --- | --- | " + (if $compared then "--- | " else "" end) + "--- |"),
+        (.[:100][] | "| \(.sev | cell) | \(.id | cell) | \(.dep | cell) | \(.fixed | cell) | "
+          + (if $compared then (if .state == "new" then "new" elif .state == "unchanged" then "existing" else "not compared" end) + " | " else "" end)
+          + "\(if .vex then "suppressed" else "" end) |"),
         (if length > 100 then "", "... and \(length - 100) more in the SARIF log." else empty end)
       end' "$1" >> "$summary" 2>/dev/null || true
 }
@@ -317,6 +363,12 @@ vuln() {
     any|low|medium|high|critical|never) ;;
     *) echo "::error title=setup-raeva::vuln-fail-on must be any, low, medium, high, critical, or never"; exit 2 ;;
   esac
+  local baseline=()
+  if [[ "$base_missing" == true ]]; then
+    fail_on=never
+  elif [[ -n "$base_lock" ]]; then
+    baseline=(--baseline "$base_lock")
+  fi
   local sarif="$run/raeva.sarif" errlog="$run/vuln.err" code=0 vex=() line
   while IFS= read -r line; do
     line="${line%$'\r'}"
@@ -324,7 +376,7 @@ vuln() {
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" ]] || vex+=(--vex "$line")
   done <<< "${INPUT_VEX:-}"
-  "$raeva" -C "$workdir" vuln --format sarif --fail-on "$fail_on" ${vex[@]+"${vex[@]}"} ${maven[@]+"${maven[@]}"} > "$sarif" 2> "$errlog" || code=$?
+  "$raeva" -C "$workdir" vuln --format sarif --fail-on "$fail_on" ${baseline[@]+"${baseline[@]}"} ${vex[@]+"${vex[@]}"} ${maven[@]+"${maven[@]}"} > "$sarif" 2> "$errlog" || code=$?
   raw cat "$errlog"
   out vuln-exit-code "$code"
   printf '\n### Vulnerabilities\n' >> "$summary"
@@ -355,6 +407,7 @@ vuln() {
   out sarif-category "$(sarif_category)"
   out vuln-findings "$count"
   local gating="findings at $fail_on or above fail the job"
+  [[ -z "$base_lock" ]] || gating="new findings at $fail_on or above fail the job"
   [[ "$fail_on" != never ]] || gating="findings do not fail the job (vuln-fail-on: never)"
   if [[ $code -gt 1 ]]; then
     printf '\n`raeva vuln` did not complete (exit %s): %s finding(s)%s in the partial SARIF log.\n' "$code" "${count:-?}" "$note" >> "$summary"
@@ -380,6 +433,58 @@ gate() {
   esac
 }
 
+# Read Git objects as data, without checking out or running the base tree.
+# A missing tree entry is distinct from an HTTP or malformed-response error.
+baseline_error() {
+  echo "::error title=setup-raeva::cannot read the vulnerability baseline of the base commit; $1"
+  exit 2
+}
+base_json() {
+  local status
+  status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 \
+    -H @- -H 'Accept: application/vnd.github+json' -o "$run/base.json" -w '%{http_code}' \
+    "$api/repos/$GITHUB_REPOSITORY/$1") || baseline_error "request failed"
+  [[ "$status" == 200 ]] || baseline_error "HTTP $status (the job needs contents: read)"
+}
+pr_baseline() {
+  [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]] || return 0
+  command -v jq >/dev/null || baseline_error "jq is required"
+  [[ -f "${GITHUB_EVENT_PATH:-}" && -n "${GITHUB_REPOSITORY:-}" ]] || baseline_error "pull request metadata is missing"
+  local base tree path="${workdir%/}/raeva.lock" part entry kind sha mode
+  base=$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH") || baseline_error "base SHA is missing"
+  [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || baseline_error "base SHA is invalid"
+  path="${path#./}"
+  [[ "$path" != /* && "/$path/" != */../* && "/$path/" != */./* && "$path" != *//* && "$path" != *\\* ]] || baseline_error "working-directory must be a path inside the repository without . or .."
+  base_json "git/commits/$base"
+  tree=$(jq -er '.tree.sha | select(test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' "$run/base.json") || baseline_error "invalid commit response"
+  while [[ -n "$path" ]]; do
+    part="${path%%/*}"
+    base_json "git/trees/$tree"
+    jq -e '.truncated == false and (.tree | type == "array")' "$run/base.json" >/dev/null || baseline_error "invalid or truncated tree response"
+    entry=$(jq -cer --arg p "$part" '[.tree[] | select(.path == $p)] | if length <= 1 then . else error("duplicate entry") end' "$run/base.json") || baseline_error "invalid tree entry"
+    if [[ "$entry" == '[]' ]]; then
+      base_missing=true
+      echo "::notice title=setup-raeva::The base commit has no raeva.lock for this root; vulnerability findings are report-only (--fail-on never). Scan errors still fail."
+      printf '\nThe base commit has no `raeva.lock` for this root. Vulnerabilities use `--fail-on never`; scan errors still fail.\n' >> "$summary"
+      return 0
+    fi
+    kind=$(jq -r '.[0].type' <<< "$entry")
+    mode=$(jq -r '.[0].mode' <<< "$entry")
+    sha=$(jq -er '.[0].sha | select(test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' <<< "$entry") || baseline_error "invalid object SHA"
+    if [[ "$path" == */* ]]; then
+      [[ "$kind/$mode" == tree/040000 ]] || baseline_error "a parent of raeva.lock is not a directory"
+      tree="$sha" path="${path#*/}"
+    else
+      [[ "$kind" == blob && "$mode" == 100644 || "$kind" == blob && "$mode" == 100755 ]] || baseline_error "raeva.lock is not a regular file"
+      base_json "git/blobs/$sha"
+      base_lock="$run/base.lock"
+      jq -ej '. | select(.encoding == "base64" and (.content | type == "string")) | .content | gsub("[\\r\\n]"; "") | @base64d' "$run/base.json" > "$base_lock" || baseline_error "unreadable blob response"
+      [[ -s "$base_lock" ]] || baseline_error "raeva.lock is empty"
+      path=""
+    fi
+  done
+}
+
 # On a pull request, compares raeva.lock with the base commit's, read
 # through the contents API so a shallow checkout without credentials works.
 pr_diff() {
@@ -394,7 +499,7 @@ pr_diff() {
     echo "::notice title=setup-raeva::no lock diff for working-directory '$workdir'; use a path inside the repository without . or .."
     return 0
   fi
-  local encoded old="$run/base.lock" status
+  local encoded old="$run/display-base.lock" status
   encoded=$(jq -rn --arg p "$path" '$p | split("/") | map(@uri) | join("/")')
   # The header comes on stdin so the token is not in curl's arguments.
   status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 \
@@ -426,7 +531,7 @@ relock() {
   fi
   local args=(-C "$workdir" sync ${maven[@]+"${maven[@]}"})
   [[ -z "$platforms" ]] || args+=(--platforms "$platforms")
-  echo "raeva ${args[*]}"
+  echo "raeva sync"
   raw "$raeva" "${args[@]}"
   # Keep Maven Trusted Checksums in step when the project commits them.
   if [[ -f "$workdir/.mvn/checksums/checksums.sha256" ]]; then
@@ -441,6 +546,11 @@ relock() {
 case "$mode" in
   relock) relock ;;
   scan)
+    case "$check_mode" in
+      blocking|report-only) ;;
+      *) echo "::error title=setup-raeva::check-mode must be blocking or report-only"; exit 2 ;;
+    esac
+    if [[ "${INPUT_LOCK_DIFF:-true}" != only && "${INPUT_VULN:-false}" == true ]]; then pr_baseline; fi
     # lock-diff: only writes the diff without the check, for a job without
     # the credentials that resolution needs.
     case "${INPUT_LOCK_DIFF:-true}/${INPUT_CHECK:-false}" in

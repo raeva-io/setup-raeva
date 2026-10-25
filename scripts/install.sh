@@ -54,8 +54,12 @@ case "${RUNNER_OS:-$(uname -s)}/${RUNNER_ARCH:-$(uname -m)}" in
   *) die "no raeva build for ${RUNNER_OS:-?}/${RUNNER_ARCH:-?}; use install.ps1 on Windows" ;;
 esac
 
-if [[ -r /etc/alpine-release ]] || { command -v ldd >/dev/null && ldd --version 2>&1 | grep -qi musl; }; then
-  die "raeva release builds need glibc; this runner or container uses musl"
+if [[ "$target" == *-linux-gnu ]]; then
+  # musl ldd returns a nonzero status for --version on some systems.
+  libc=$(ldd --version 2>&1 || true)
+  if [[ -r /etc/alpine-release || "$libc" == *musl* || "$libc" == *Musl* ]]; then
+    target="${target%-gnu}-musl"
+  fi
 fi
 
 mirror="$base_url"

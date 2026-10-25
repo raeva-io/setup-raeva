@@ -50,7 +50,8 @@ run_env() { # run_env <name> <script...>; sets up a fresh RUNNER_TEMP and output
   local dir="$scratch/run-$name"
   mkdir -p "$dir/temp"
   : > "$dir/output"; : > "$dir/path"; : > "$dir/summary"
-  env RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_TEMP="$dir/temp" \
+  env -u GITHUB_EVENT_NAME -u GITHUB_EVENT_PATH -u GITHUB_REPOSITORY \
+    RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_TEMP="$dir/temp" \
     GITHUB_OUTPUT="$dir/output" GITHUB_PATH="$dir/path" GITHUB_STEP_SUMMARY="$dir/summary" \
     GITHUB_ACTION_PATH="${ACTION_PATH:-$unpinned}" "$@" > "$dir/log" 2>&1
 }
@@ -343,7 +344,7 @@ for i in "${!install_variants[@]}"; do
     # shellcheck disable=SC2086
     run_env "$tag-frozen-define" env RAEVA_BIN="$raeva" INPUT_CHECK=true INPUT_LOCK_DIFF=false \
       INPUT_PROPERTIES=setup.raeva.test=1 INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
-    expect "$tag: frozen check fails with 7 on a new -D" 7 $?
+    expect "$tag: frozen check ignores an unused -D" 0 $?
     # shellcheck disable=SC2086
     run_env "$tag-frozen-nosettings" env RAEVA_BIN="$raeva" INPUT_CHECK=true INPUT_LOCK_DIFF=false \
       INPUT_SETTINGS="$scratch/no-such-settings.xml" INPUT_WORKING_DIRECTORY="$PROJECT" $chk scan
@@ -443,8 +444,8 @@ has "$scratch/run-probe-404/log" "::notice" && bad "bash: no notice when the upl
 # artifact directory.
 prdir="$scratch/pr-project"
 mkdir -p "$prdir"
-printf 'platform = "linux-x86_64"\n' > "$prdir/raeva.lock"
-printf 'platform = "macos-aarch64"\n' > "$scratch/base.lock"
+printf 'schema_version = 7\n[[platforms]]\ntargets = ["linux-x86_64"]\n' > "$prdir/raeva.lock"
+printf 'schema_version = 7\n[[platforms]]\ntargets = ["macos-aarch64"]\n' > "$scratch/base.lock"
 base_sha=$(printf '0%.0s' {1..40})
 printf '{"pull_request":{"base":{"sha":"%s"},"user":{"login":"dependabot[bot]","type":"Bot"}}}' "$base_sha" > "$scratch/event-bot.json"
 printf '{"pull_request":{"base":{"sha":"%s"},"user":{"login":"someone","type":"User"}}}' "$base_sha" > "$scratch/event-user.json"
@@ -510,10 +511,10 @@ for i in "${!check_variants[@]}"; do
   if [[ $tag == bash ]]; then
     words=()
     eval "words=($fix)"
-    [[ "$(printf '%s|' "${words[@]}")" == "raeva|-C|pr-project|sync|--settings=ci.xml|--activate-profiles=ci|--define=who=O'Brien|" ]] \
+    [[ "$(printf '%s|' "${words[@]}")" == "raeva|-C|pr-project|sync|--settings=ci.xml|--activate-profiles=ci|--define=who=<value>|" ]] \
       && ok "$tag: the fixing command" || bad "$tag: the fixing command ($fix)"
   else
-    [[ "$fix" == "raeva -C pr-project sync --settings=ci.xml --activate-profiles=ci '--define=who=O''Brien'" ]] \
+    [[ "$fix" == "raeva -C pr-project sync --settings=ci.xml --activate-profiles=ci '--define=who=<value>'" ]] \
       && ok "$tag: the fixing command" || bad "$tag: the fixing command ($fix)"
   fi
   has "$psum" "more lines; the full diff is proposed.diff in the raeva-lock-proposed-pr-project-" && ok "$tag: proposed diff cut, with the artifact named" || bad "$tag: proposed diff cut, with the artifact named"
@@ -547,13 +548,13 @@ done
 # the summary cut to 200 lines.
 relock_dir="$scratch/relock-long"
 mkdir -p "$relock_dir"
-printf 'platform = "linux-x86_64"\n' > "$relock_dir/raeva.lock"
+printf 'schema_version = 7\n[[platforms]]\ntargets = ["linux-x86_64"]\n' > "$relock_dir/raeva.lock"
 run_env relock-long env RAEVA_BIN="$stub" INPUT_WORKING_DIRECTORY="$relock_dir" bash "$here/scripts/check.sh" relock
 expect "bash: relock with a long lock diff succeeds" 0 $?
 has "$scratch/run-relock-long/summary" "49800 more lines" && ok "bash: long lock diff cut to 200 lines" || bad "bash: long lock diff cut to 200 lines"
 
 # A relock passes the Maven options to raeva sync.
-printf 'platform = "linux-x86_64"\n' > "$relock_dir/raeva.lock"
+printf 'schema_version = 7\n[[platforms]]\ntargets = ["linux-x86_64"]\n' > "$relock_dir/raeva.lock"
 run_env relock-maven env RAEVA_BIN="$stub" STUB_ARGS="$scratch/relock-args" INPUT_WORKING_DIRECTORY="$relock_dir" \
   INPUT_PROFILES=ci INPUT_PROPERTIES=a=1 bash "$here/scripts/check.sh" relock
 [[ "$(tr '\n' '|' < "$scratch/relock-args")" == *"|sync|--activate-profiles=ci|--define=a=1|--platforms|linux-x86_64|"* ]] \

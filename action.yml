@@ -21,7 +21,7 @@ inputs:
   token:
     description: >-
       Read token for the attestations, for the release download when the
-      repository is private, and, with lock-diff, for the base commit's
+      repository is private, and, with lock-diff or vuln, for the base commit's
       raeva.lock (contents: read). It needs no write scope.
     default: ${{ github.token }}
   cache:
@@ -39,6 +39,12 @@ inputs:
   check:
     description: Run `raeva sync --frozen` after the install.
     default: "false"
+  check-mode:
+    description: >-
+      'blocking' fails on a stale or drifted lock. 'report-only' reports the
+      proposed diff and fix command without failing on lock changes.
+      Other check errors still fail. Use with check: true.
+    default: blocking
   platforms:
     description: >-
       Platforms for the frozen check and relock, comma separated
@@ -60,8 +66,8 @@ inputs:
       Maven user properties, one name=value per line, each passed as -D, as
       for mvn -D. Whitespace around a line is dropped. Only properties that
       change resolution belong here, such as ones that activate a profile or
-      set a version; every -D is an input of the lock, so a build flag such
-      as skipTests fails the check of a lock written without it.
+      set a version. Only property names read by the models or settings are
+      lock inputs. Unused build flags do not invalidate the lock.
     default: ""
   relock:
     description: >-
@@ -78,7 +84,10 @@ inputs:
       Linux and macOS; 'only' fails on Windows.
     default: "true"
   vuln:
-    description: Run `raeva vuln --format sarif` after the frozen check.
+    description: >-
+      Run `raeva vuln --format sarif` after the frozen check. Pull requests
+      compare against the base commit's lock and fail only on new findings.
+      If the base has no lock, findings are report-only; scan errors fail.
     default: "false"
   vuln-fail-on:
     description: >-
@@ -137,6 +146,12 @@ outputs:
   frozen-exit-code:
     description: The exit code of `raeva sync --frozen`, when check ran.
     value: ${{ steps.scan-unix.outputs.frozen-exit-code || steps.scan-windows.outputs.frozen-exit-code }}
+  proposed-diff:
+    description: The path of the full proposed diff, when a proposed lock was generated.
+    value: ${{ steps.scan-unix.outputs.proposed-diff || steps.scan-windows.outputs.proposed-diff }}
+  fix-command:
+    description: The command to regenerate a stale lock, with property values replaced by <value>.
+    value: ${{ steps.scan-unix.outputs.fix-command || steps.scan-windows.outputs.fix-command }}
   sarif-file:
     description: >-
       The path of the SARIF log, when vuln ran and wrote one. An incomplete
@@ -230,6 +245,7 @@ runs:
         RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_CHECK: ${{ inputs.check }}
+        INPUT_CHECK_MODE: ${{ inputs.check-mode }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_VULN: ${{ inputs.vuln }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
@@ -251,6 +267,7 @@ runs:
         RAEVA_BIN: ${{ steps.windows.outputs.raeva }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_CHECK: ${{ inputs.check }}
+        INPUT_CHECK_MODE: ${{ inputs.check-mode }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_VULN: ${{ inputs.vuln }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
@@ -261,6 +278,7 @@ runs:
         INPUT_SETTINGS: ${{ inputs.settings }}
         INPUT_PROFILES: ${{ inputs.profiles }}
         INPUT_PROPERTIES: ${{ inputs.properties }}
+        GH_TOKEN: ${{ inputs.token }}
         UPLOAD_TOKEN: ${{ github.token }}
 
     # A failed frozen check stops the steps after it, so the lock diff

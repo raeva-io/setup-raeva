@@ -9,14 +9,24 @@ Set-StrictMode -Version 3.0
 $raeva = if ($env:RAEVA_BIN) { $env:RAEVA_BIN } else { 'raeva' }
 $workdir = if ($env:INPUT_WORKING_DIRECTORY) { $env:INPUT_WORKING_DIRECTORY } else { '.' }
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
-# Only the code scanning check uses a token, the job token that the SARIF
-# upload uses too; raeva never sees one.
+# API requests use the tokens; raeva never sees them.
 $uploadToken = "$env:UPLOAD_TOKEN"
+$token = "$env:GH_TOKEN"
+$checkMode = if ($env:INPUT_CHECK_MODE) { $env:INPUT_CHECK_MODE } else { 'blocking' }
+$baseLock = ''
+$baseMissing = $false
 Remove-Item Env:GH_TOKEN, Env:UPLOAD_TOKEN -ErrorAction SilentlyContinue
 $api = if ($env:GITHUB_API_URL) { $env:GITHUB_API_URL } else { 'https://api.github.com' }
 
 function Out([string]$Name, [string]$Value) {
-    if ($env:GITHUB_OUTPUT) { Add-Content -Path $env:GITHUB_OUTPUT -Value "$Name=$Value" -Encoding utf8 }
+    if ($env:GITHUB_OUTPUT) {
+        if ($Value.Contains("`n") -or $Value.Contains("`r")) {
+            $delimiter = [guid]::NewGuid().ToString('N')
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "$Name<<$delimiter`n$Value`n$delimiter" -Encoding utf8
+        } else {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "$Name=$Value" -Encoding utf8
+        }
+    }
 }
 function Summary([string]$Text) {
     if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $Text -Encoding utf8 }
@@ -125,13 +135,21 @@ function Write-Warnings($Envelope, [string]$Command) {
     Fenced ($lines -join "`n")
 }
 
-# The platforms a lock records, read as text, since a malformed or
-# conflicted lock still names them.
+# Read schema targets as text, including both sides of a merge conflict.
+# --platforms takes OS/architecture pairs; sync reads the JDKs itself.
 function Get-LockPlatforms([string]$Lock) {
     if (-not (Test-Path -LiteralPath $Lock)) { return '' }
     $seen = [Collections.Generic.List[string]]::new()
+    $targets = $false
     foreach ($line in [IO.File]::ReadAllLines($Lock)) {
-        if ($line -cmatch '^platform = "([a-z0-9_-]*)"\s*$' -and -not $seen.Contains($Matches[1])) { $seen.Add($Matches[1]) }
+        if ($line -cmatch '^\s*targets\s*=\s*\[') { $targets = $true }
+        if ($targets -or $line -cmatch '^\s*target\s*=') {
+            foreach ($match in [regex]::Matches($line, '"([A-Za-z0-9_]+-[A-Za-z0-9_]+)(?:@[A-Za-z0-9._+-]{1,32})?"')) {
+                $platform = $match.Groups[1].Value
+                if (-not $seen.Contains($platform)) { $seen.Add($platform) }
+            }
+        }
+        if ($line.Contains(']')) { $targets = $false }
     }
     $seen -join ','
 }
@@ -144,7 +162,9 @@ function Get-SyncCommand {
     if ($workdir -ne '.' -and $workdir -ne './') { $words += @('-C', $workdir) }
     $words += 'sync'
     foreach ($arg in $maven) {
-        if (-not ($arg.StartsWith('--settings=') -and [IO.Path]::IsPathRooted($arg.Substring(11)))) { $words += $arg }
+        if ($arg.StartsWith('--settings=') -and [IO.Path]::IsPathRooted($arg.Substring(11))) { continue }
+        if ($arg.StartsWith('--define=')) { $arg = '--define=' + ($arg.Substring(9) -split '=', 2)[0] + '=<value>' }
+        $words += $arg
     }
     if ($env:INPUT_PLATFORMS) { $words += @('--platforms', $env:INPUT_PLATFORMS) }
     # PowerShell quoting: a single-quoted word doubles its apostrophes.
@@ -166,55 +186,70 @@ function Get-DiffArtifact([string]$Prefix, [string]$More) {
     if ($dir) { "$Prefix-$($dir -replace '[^A-Za-z0-9._-]', '-')-$hash" } else { "$Prefix-$hash" }
 }
 
-# On a bot's pull request whose lock is stale, writes the lock diff that
+# For report-only checks or a bot's stale lock, writes the lock diff that
 # `raeva sync` would commit. raeva writes it in a copy of the working
 # directory that is removed afterwards, so later steps see the committed lock.
 function Invoke-Proposed {
-    if (-not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request')) -or -not $env:GITHUB_EVENT_PATH -or
-        -not (Test-Path -LiteralPath $env:GITHUB_EVENT_PATH)) { return }
-    $type = ''
-    try { $type = "$((Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json).pull_request.user.type)" } catch { }
-    $lock = Join-Path $workdir 'raeva.lock'
-    if ($type -cne 'Bot' -or -not (Test-Path -LiteralPath $lock)) { return }
-    $copy = Join-Path $runDir 'proposed'
-    New-Item -ItemType Directory -Path $copy | Out-Null
-    Get-ChildItem -LiteralPath $workdir -Force | Where-Object { $_.Name -ne '.git' } | Copy-Item -Destination $copy -Recurse -Force
-    $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms (Join-Path $copy 'raeva.lock') }
-    $arguments = @('-q', '-C', $copy, 'sync') + $maven
-    if ($platforms) { $arguments += @('--platforms', $platforms) }
-    $syncOut = Join-Path $runDir 'proposed.out'
-    $syncErr = Join-Path $runDir 'proposed.err'
-    Write-Host '::group::raeva sync in a copy, for the proposed lock'
-    $code = Invoke-Raeva $arguments $syncOut $syncErr
-    Write-Raw @($syncOut, $syncErr)
-    Write-Host '::endgroup::'
-    Summary "`n### Proposed raeva.lock, not committed"
-    if ($code -ne 0) {
-        Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The error above stands."
-    } else {
-        Summary "`nThis is the lock ``raeva sync`` writes for this pull request. It is not committed, later steps use the committed lock, and the check above still fails. To fix it, run this on the branch and commit raeva.lock:"
-        Fenced (Get-SyncCommand)
-        if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
-            Summary "`nThis job reads the settings file ``$($env:INPUT_SETTINGS.Replace('``', ''))``; run it with a settings file that has the same repositories and profiles."
-        }
-        $diffOut = Join-Path $runDir 'diff.out'
-        $diffErr = Join-Path $runDir 'diff.err'
-        $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $lock, (Join-Path $copy 'raeva.lock')) $diffOut $diffErr
-        if ($diffCode -ne 0) { Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)." }
-        $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
-        $artifactDir = Join-Path $runDir 'proposed-diff'
-        New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
-        [IO.File]::WriteAllText((Join-Path $artifactDir 'proposed.diff'), "$text`n", [Text.UTF8Encoding]::new($false))
-        $artifact = Get-DiffArtifact 'raeva-lock-proposed' "$env:JAVA_HOME"
-        Out 'proposed-dir' $artifactDir
-        Out 'proposed-artifact' $artifact
-        $lines = $text -split "`n"
-        if ($lines.Count -gt 200) {
-            $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"
-        }
-        Fenced $text
+    if ($checkMode -ne 'report-only') {
+        if (-not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request')) -or -not $env:GITHUB_EVENT_PATH -or
+            -not (Test-Path -LiteralPath $env:GITHUB_EVENT_PATH)) { return }
+        $type = ''
+        try { $type = "$((Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json).pull_request.user.type)" } catch { }
+        if ($type -cne 'Bot') { return }
     }
-    Remove-Item -LiteralPath $copy -Recurse -Force -ErrorAction SilentlyContinue
+    $lock = Join-Path $workdir 'raeva.lock'
+    if (-not (Test-Path -LiteralPath $lock)) { return }
+    Out 'fix-command' (Get-SyncCommand)
+    $copy = Join-Path $runDir 'proposed'
+    try {
+        New-Item -ItemType Directory -Path $copy | Out-Null
+        Get-ChildItem -LiteralPath $workdir -Force | Where-Object { $_.Name -ne '.git' } | Copy-Item -Destination $copy -Recurse -Force
+        $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms (Join-Path $copy 'raeva.lock') }
+        $arguments = @('-q', '-C', $copy, 'sync') + $maven
+        if ($platforms) { $arguments += @('--platforms', $platforms) }
+        $syncOut = Join-Path $runDir 'proposed.out'
+        $syncErr = Join-Path $runDir 'proposed.err'
+        Write-Host '::group::raeva sync in a copy, for the proposed lock'
+        $code = Invoke-Raeva $arguments $syncOut $syncErr
+        Write-Raw @($syncOut, $syncErr)
+        Write-Host '::endgroup::'
+        Summary "`n### Proposed raeva.lock, not committed"
+        if ($code -ne 0) {
+            Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The check cannot complete."
+            if ($checkMode -eq 'report-only') { exit $code }
+        } else {
+            Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:"
+            Fenced (Get-SyncCommand)
+            if ($env:INPUT_PROPERTIES) {
+                Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
+            }
+            if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
+                Summary "`nThis job reads the settings file ``$($env:INPUT_SETTINGS.Replace('``', ''))``; run it with a settings file that has the same repositories and profiles."
+            }
+            $diffOut = Join-Path $runDir 'diff.out'
+            $diffErr = Join-Path $runDir 'diff.err'
+            $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $lock, (Join-Path $copy 'raeva.lock')) $diffOut $diffErr
+            if ($diffCode -ne 0) {
+                Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)."
+                if ($checkMode -eq 'report-only') { exit $diffCode }
+            }
+            $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
+            $artifactDir = Join-Path $runDir 'proposed-diff'
+            New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+            [IO.File]::WriteAllText((Join-Path $artifactDir 'proposed.diff'), "$text`n", [Text.UTF8Encoding]::new($false))
+            $artifact = Get-DiffArtifact 'raeva-lock-proposed' "$env:JAVA_HOME"
+            Out 'proposed-diff' (Join-Path $artifactDir 'proposed.diff')
+            Out 'proposed-dir' $artifactDir
+            Out 'proposed-artifact' $artifact
+            $lines = $text -split "`n"
+            if ($lines.Count -gt 200) {
+                $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"
+            }
+            Fenced $text
+        }
+    } finally {
+        Remove-Item -LiteralPath $copy -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-Frozen {
@@ -240,11 +275,17 @@ function Invoke-Frozen {
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
     $lockPath = "$workdir/raeva.lock"
     if ($lockPath.StartsWith('./')) { $lockPath = $lockPath.Substring(2) }
-    Write-Output "::error file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
+    $level = if ($checkMode -eq 'report-only' -and $code -eq 7) { 'warning' } else { 'error' }
+    Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
     Fenced "$message`n`n$hints"
     Write-Warnings $envelope 'sync --frozen'
     if ($code -eq 7) {
+        if ($checkMode -eq 'report-only') {
+            Summary "`nReport-only mode: lock changes do not fail this job."
+            Invoke-Proposed
+            return
+        }
         try { Invoke-Proposed } catch { Write-Host "No proposed lock: $_" }
     }
     exit $code
@@ -304,14 +345,23 @@ function Write-FindingsTable($Log) {
                 Id       = if ($result.PSObject.Properties['ruleId']) { "$($result.ruleId)" } else { '' }
                 Purl     = & $field 'dependencyPurl'
                 Fixed    = & $field 'fixedVersion'
+                Baseline = if ($result.PSObject.Properties['baselineState']) {
+                    switch ($result.baselineState) {
+                        'new' { 'new' }
+                        'unchanged' { 'existing' }
+                        default { 'not compared' }
+                    }
+                } else { 'not compared' }
             }
         }
     }
     if ($rows.Count -eq 0) { return }
     $rows = @($rows | Sort-Object -Property Vex, Rank, Id -CaseSensitive)
-    $lines = @('', '| Severity | Advisory | Dependency | Fixed in | VEX |', '| --- | --- | --- | --- | --- |')
+    $compared = @($rows | Where-Object { $_.Baseline -ne 'not compared' }).Count -gt 0
+    $lines = @('', ('| Severity | Advisory | Dependency | Fixed in | ' + $(if ($compared) { 'Baseline | ' }) + 'VEX |'),
+        ('| --- | --- | --- | --- | ' + $(if ($compared) { '--- | ' }) + '--- |'))
     foreach ($row in ($rows | Select-Object -First 100)) {
-        $lines += "| $(Format-Cell $row.Severity) | $(Format-Cell $row.Id) | $(Format-Cell $row.Purl) | $(Format-Cell $row.Fixed) | $(if ($row.Vex) { 'suppressed' }) |"
+        $lines += "| $(Format-Cell $row.Severity) | $(Format-Cell $row.Id) | $(Format-Cell $row.Purl) | $(Format-Cell $row.Fixed) | " + $(if ($compared) { "$($row.Baseline) | " }) + "$(if ($row.Vex) { 'suppressed' }) |"
     }
     if ($rows.Count -gt 100) { $lines += @('', "... and $($rows.Count - 100) more in the SARIF log.") }
     Summary ($lines -join "`n")
@@ -325,7 +375,9 @@ function Invoke-Vuln {
     }
     $sarif = Join-Path $runDir 'raeva.sarif'
     $err = Join-Path $runDir 'vuln.err'
+    if ($baseMissing) { $failOn = 'never' }
     $arguments = @('-C', $workdir, 'vuln', '--format', 'sarif', '--fail-on', $failOn)
+    if ($baseLock) { $arguments += @('--baseline', $baseLock) }
     foreach ($line in "$env:INPUT_VEX" -split "`n") {
         $path = $line.Trim()
         if ($path) { $arguments += @('--vex', $path) }
@@ -371,6 +423,7 @@ function Invoke-Vuln {
     Out 'vuln-findings' $count
     $note = if ($suppressed -gt 0) { ", and $suppressed suppressed by VEX" } else { '' }
     $gating = if ($failOn -eq 'never') { 'findings do not fail the job (vuln-fail-on: never)' } else { "findings at $failOn or above fail the job" }
+    if ($baseLock -and $failOn -ne 'never') { $gating = "new findings at $failOn or above fail the job" }
     if ($code -gt 1) {
         Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s)$note in the partial SARIF log."
     } else {
@@ -378,6 +431,60 @@ function Invoke-Vuln {
     }
     Write-FindingsTable $log
     Test-SarifUpload
+}
+
+# Read Git objects as data, without checking out or running the base tree.
+function Get-BaseJson([string]$Path) {
+    $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -MaximumRedirection 0 `
+        -Uri "$api/repos/$env:GITHUB_REPOSITORY/$Path" `
+        -Headers @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json' }
+    if ([int]$response.StatusCode -ne 200) { throw "HTTP $($response.StatusCode) (the job needs contents: read)" }
+    $response.Content | ConvertFrom-Json
+}
+function Read-PrBaseline {
+    if (-not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request'))) { return }
+    try {
+        if (-not $env:GITHUB_EVENT_PATH -or -not $env:GITHUB_REPOSITORY) { throw 'pull request metadata is missing' }
+        $base = (Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json).pull_request.base.sha
+        if ($base -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'base SHA is invalid' }
+        $path = ($workdir -replace '\\', '/').TrimEnd('/') + '/raeva.lock'
+        if ($path.StartsWith('./')) { $path = $path.Substring(2) }
+        if ($path.StartsWith('/') -or $path -match '(^|/)\.\.?/|//|:') { throw 'working-directory must be a path inside the repository without . or ..' }
+        $tree = (Get-BaseJson "git/commits/$base").tree.sha
+        $parts = $path -split '/'
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            $part = $parts[$i]
+            if ($tree -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'invalid tree SHA' }
+            $data = Get-BaseJson "git/trees/$tree"
+            if ($data.truncated -ne $false -or $data.tree -isnot [array]) { throw 'invalid or truncated tree response' }
+            $entries = @($data.tree | Where-Object { $_.path -ceq $part })
+            if ($entries.Count -eq 0) {
+                $script:baseMissing = $true
+                Write-Host '::notice title=setup-raeva::The base commit has no raeva.lock for this root; vulnerability findings are report-only (--fail-on never). Scan errors still fail.'
+                Summary "`nThe base commit has no ``raeva.lock`` for this root. Vulnerabilities use ``--fail-on never``; scan errors still fail."
+                return
+            }
+            if ($entries.Count -ne 1) { throw 'duplicate tree entry' }
+            $entry = $entries[0]
+            if ($entry.sha -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'invalid object SHA' }
+            if ($i -eq $parts.Count - 1) {
+                if ($entry.type -cne 'blob' -or $entry.mode -notin @('100644', '100755')) { throw 'raeva.lock is not a regular file' }
+                $blob = Get-BaseJson "git/blobs/$($entry.sha)"
+                if ($blob.encoding -cne 'base64' -or $blob.content -isnot [string]) { throw 'unreadable blob response' }
+                $bytes = [Convert]::FromBase64String($blob.content)
+                if ($bytes.Length -eq 0) { throw 'raeva.lock is empty' }
+                $script:baseLock = Join-Path $runDir 'base.lock'
+                [IO.File]::WriteAllBytes($script:baseLock, $bytes)
+            } else {
+                if ($entry.type -cne 'tree' -or $entry.mode -cne '040000') { throw 'a parent of raeva.lock is not a directory' }
+                $tree = $entry.sha
+            }
+        }
+    } catch {
+        # Do not echo response bodies or exceptions, which may contain headers.
+        Write-Host '::error title=setup-raeva::cannot read the vulnerability baseline of the base commit; check contents: read, the base SHA, and the lock path'
+        exit 2
+    }
 }
 
 function Invoke-Gate {
@@ -395,6 +502,11 @@ function Invoke-Gate {
 
 switch ($Mode) {
     'scan' {
+        if ($checkMode -notin @('blocking', 'report-only')) {
+            Write-Output '::error title=setup-raeva::check-mode must be blocking or report-only'
+            exit 2
+        }
+        if ($env:INPUT_VULN -eq 'true' -and $env:INPUT_LOCK_DIFF -ne 'only') { Read-PrBaseline }
         if ($env:INPUT_LOCK_DIFF -eq 'only') {
             Write-Output '::error title=setup-raeva::lock-diff: only runs on Linux and macOS runners'
             exit 1

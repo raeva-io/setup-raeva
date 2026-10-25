@@ -250,7 +250,8 @@ based image, not Alpine.
    hints. raeva's warnings become one annotation per warning code, except
    `HTTP_REPO_BLOCKED`, which only the job summary lists. On a bot's pull
    request with a stale lock, the summary also shows the proposed lock, and
-   the full proposed diff goes to an artifact.
+   the full proposed diff goes to an artifact, `raeva-lock-proposed-`
+   followed by the working directory and a hash; the summary names it.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
    commit's `raeva.lock` with this one, writes `raeva lock diff` to the job
    summary, and uploads the full diff as an artifact, `raeva-lock-diff-`

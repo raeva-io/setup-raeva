@@ -140,11 +140,12 @@ jobs:
           seen=$'\n'
           for dir in "$RUNNER_TEMP"/relock/*/; do
             artifact=$(basename "$dir")
-            if [[ ! "$artifact" =~ ^raeva-relock-([0-9]+)$ ]] || (( BASH_REMATCH[1] >= ${#roots[@]} )); then
-              echo "::error::unexpected artifact: $artifact"
-              exit 1
-            fi
-            root="${roots[BASH_REMATCH[1]]#./}"
+            root=""
+            for i in "${!roots[@]}"; do
+              [[ "$artifact" != "raeva-relock-$i" ]] || { root="${roots[i]}"; break; }
+            done
+            [[ -n "$root" ]] || { echo "::error::unexpected artifact: $artifact"; exit 1; }
+            root="${root#./}"
             root="${root%/}"
             prefix=""
             [[ "$root" == . || -z "$root" ]] || prefix="$root/"

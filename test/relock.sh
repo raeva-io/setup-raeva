@@ -128,6 +128,17 @@ run_push_job "$t/push-evil5" "$t/evil5.tar"
 code=$?
 [[ $code -ne 0 ]] && grep -q "checksums.sha1 is not a committed file" "$t/push-evil5.log" && ok "refuses a file the branch does not have" || bad "refuses a file the branch does not have (exit $code)"
 
+# Artifact names that only look like an index of a listed root.
+for name in raeva-relock-00 raeva-relock-18446744073709551616 raeva-relock-+0; do
+  dir="$t/push-name-$name"
+  git clone --quiet "$t/remote.git" "$dir" && git -C "$dir" checkout --quiet "$head_sha"
+  mkdir -p "$dir.temp/relock/$name" && cp "$t/relock.temp/relock/relock.tar" "$dir.temp/relock/$name/"
+  (cd "$dir" && env ROOTS='["."]' HEAD_REF="$branch" HEAD_SHA="$head_sha" TOKEN=not-a-real-token RUNNER_TEMP="$dir.temp" \
+    bash -e "$t/push.sh" > "$dir.log" 2>&1)
+  code=$?
+  [[ $code -ne 0 ]] && grep -q "unexpected artifact: $name" "$dir.log" && ok "refuses artifact $name" || bad "refuses artifact $name (exit $code)"
+done
+
 # An artifact for a root the matrix does not list.
 run_push_job "$t/push-extra" "$t/relock.temp/relock/relock.tar" "$t/relock-api.temp/relock/relock.tar" "$t/relock.temp/relock/relock.tar"
 code=$?

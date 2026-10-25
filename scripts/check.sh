@@ -46,7 +46,8 @@ raw() { # <command...>: runs it, stderr included, and keeps its exit code
   marker=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
   echo "::stop-commands::$marker"
   "$@" 2>&1 || code=$?
-  echo "::$marker::"
+  # The output may end without a newline; the marker must start a line.
+  printf '\n::%s::\n' "$marker"
   return "$code"
 }
 
@@ -140,45 +141,53 @@ lock_platforms() {
   sed -n 's/^platform = "\([a-z0-9_-]*\)"[[:space:]]*$/\1/p' "$1" | awk '!seen[$0]++' | paste -sd, -
 }
 
-# The artifact that holds the full lock diffs of this working directory and
-# these options. Jobs with the same ones write the same diffs, so a later
-# upload may replace an earlier one; the hash keeps other roots and options
-# apart, as services/api and services-api.
-diff_artifact() {
+# The name of an artifact with one lock diff of this working directory.
+# Jobs whose name matches write the same diff, so a later upload may replace
+# an earlier one; the hash keeps other roots, options, and for the proposed
+# lock JDKs apart, as services/api and services-api.
+diff_artifact() { # <prefix> <more of the key>
   local dir="${workdir%/}" key hash arg
   dir="${dir#./}"
   [[ "$dir" != . ]] || dir=""
   key="$dir"
   for arg in ${maven[@]+"${maven[@]}"}; do key+=$'\n'"$arg"; done
-  key+=$'\n'"${INPUT_PLATFORMS:-}"
+  key+=$'\n'"${INPUT_PLATFORMS:-}"$'\n'"$2"
   if command -v sha256sum >/dev/null; then
     hash=$(printf '%s' "$key" | sha256sum | cut -c1-8)
   else
     hash=$(printf '%s' "$key" | shasum -a 256 | cut -c1-8)
   fi
   if [[ -z "$dir" ]]; then
-    printf 'raeva-lock-diff-%s' "$hash"
+    printf '%s-%s' "$1" "$hash"
   else
-    printf 'raeva-lock-diff-%s-%s' "$(printf '%s' "$dir" | tr -c 'A-Za-z0-9._-' '-')" "$hash"
+    printf '%s-%s-%s' "$1" "$(printf '%s' "$dir" | tr -c 'A-Za-z0-9._-' '-')" "$hash"
   fi
 }
 
-# Writes `raeva lock diff <old> <new>` to the job summary, and with a file
-# name the full text to the lock diff artifact too. Never fails the step:
-# the frozen check reports a lock that cannot be read.
-diff_summary() { # <title, or empty for none> <old> <new> [artifact file]
-  local text code=0 file="${4:-}" more="run 'raeva lock diff' locally"
+# Writes `raeva lock diff <old> <new>` to the job summary, and for the pull
+# request diff or the proposed lock the full text to its artifact too. Never
+# fails the step: the frozen check reports a lock that cannot be read.
+diff_summary() { # <title, or empty for none> <old> <new> [diff|proposed]
+  local text code=0 file="" dir="" name="" more="run 'raeva lock diff' locally"
+  case "${4:-}" in
+    diff)
+      file=raeva.lock.diff dir="$run/lock-diff" name=$(diff_artifact raeva-lock-diff "")
+      out lock-diff-dir "$dir"
+      out lock-diff-artifact "$name" ;;
+    proposed)
+      file=proposed.diff dir="$run/proposed-diff" name=$(diff_artifact raeva-lock-proposed "${JAVA_HOME:-}")
+      out proposed-dir "$dir"
+      out proposed-artifact "$name" ;;
+  esac
   text=$("$raeva" -q -C "$workdir" lock diff "$2" "$3" 2>&1) || code=$?
   [[ -z "$1" ]] || printf '### %s\n' "$1" >> "$summary"
   if [[ $code -ne 0 ]]; then
     printf '\n`raeva lock diff` could not compare the locks (exit %s).\n' "$code" >> "$summary"
   fi
   if [[ -n "$file" ]]; then
-    mkdir -p "$run/lock-diff"
-    printf '%s\n' "$text" > "$run/lock-diff/$file"
-    out lock-diff-dir "$run/lock-diff"
-    out lock-diff-artifact "$(diff_artifact)"
-    more="the full diff is $file in the $(diff_artifact) artifact"
+    mkdir -p "$dir"
+    printf '%s\n' "$text" > "$dir/$file"
+    more="the full diff is $file in the $name artifact"
   fi
   local lines
   lines=$(printf '%s\n' "$text" | wc -l)
@@ -215,7 +224,7 @@ proposed() {
     if [[ "${INPUT_SETTINGS:-}" == /* ]]; then
       printf '\nThis job reads the settings file `%s`; run it with a settings file that has the same repositories and profiles.\n' "${INPUT_SETTINGS//\`/}" >> "$summary"
     fi
-    diff_summary "" "$workdir/raeva.lock" "$copy/raeva.lock" proposed.diff
+    diff_summary "" "$workdir/raeva.lock" "$copy/raeva.lock" proposed
   fi
   rm -rf "$copy"
 }
@@ -397,7 +406,7 @@ pr_diff() {
       if cmp -s "$old" "$path"; then
         printf '### raeva.lock\n\n`raeva.lock` is the same as on the base branch.\n\n' >> "$summary"
       else
-        diff_summary "raeva.lock changes against the base branch" "$old" "$path" raeva.lock.diff
+        diff_summary "raeva.lock changes against the base branch" "$old" "$path" diff
       fi ;;
     404) printf '### raeva.lock\n\nThis pull request adds `raeva.lock`.\n\n' >> "$summary" ;;
     *) echo "::notice title=setup-raeva::cannot read raeva.lock of the base commit (HTTP $status); the job needs contents: read" ;;

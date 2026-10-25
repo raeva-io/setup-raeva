@@ -147,22 +147,23 @@ function Get-SyncCommand {
         if (-not ($arg.StartsWith('--settings=') -and [IO.Path]::IsPathRooted($arg.Substring(11)))) { $words += $arg }
     }
     if ($env:INPUT_PLATFORMS) { $words += @('--platforms', $env:INPUT_PLATFORMS) }
-    ($words | ForEach-Object { if ($_ -cmatch '^[A-Za-z0-9_./=,:+@-]+$') { $_ } else { "'" + $_.Replace("'", "'\''") + "'" } }) -join ' '
+    # PowerShell quoting: a single-quoted word doubles its apostrophes.
+    ($words | ForEach-Object { if ($_ -cmatch '^[A-Za-z0-9_./=,:+@-]+$') { $_ } else { "'" + $_.Replace("'", "''") + "'" } }) -join ' '
 }
 
-# The artifact that holds the full lock diffs of this working directory and
-# these options. Jobs with the same ones write the same diffs, so a later
-# upload may replace an earlier one; the hash keeps other roots and options
-# apart, as services/api and services-api.
-function Get-DiffArtifact {
+# The name of an artifact with one lock diff of this working directory.
+# Jobs whose name matches write the same diff, so a later upload may replace
+# an earlier one; the hash keeps other roots, options, and for the proposed
+# lock JDKs apart, as services/api and services-api.
+function Get-DiffArtifact([string]$Prefix, [string]$More) {
     $dir = ($workdir -replace '\\', '/').TrimEnd('/')
     if ($dir.StartsWith('./')) { $dir = $dir.Substring(2) }
     if ($dir -eq '.') { $dir = '' }
     $key = $dir
     foreach ($arg in $maven) { $key += "`n$arg" }
-    $key += "`n$env:INPUT_PLATFORMS"
+    $key += "`n$env:INPUT_PLATFORMS`n$More"
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))).Substring(0, 8).ToLowerInvariant()
-    if ($dir) { "raeva-lock-diff-$($dir -replace '[^A-Za-z0-9._-]', '-')-$hash" } else { "raeva-lock-diff-$hash" }
+    if ($dir) { "$Prefix-$($dir -replace '[^A-Za-z0-9._-]', '-')-$hash" } else { "$Prefix-$hash" }
 }
 
 # On a bot's pull request whose lock is stale, writes the lock diff that
@@ -201,12 +202,12 @@ function Invoke-Proposed {
         $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $lock, (Join-Path $copy 'raeva.lock')) $diffOut $diffErr
         if ($diffCode -ne 0) { Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)." }
         $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
-        $artifactDir = Join-Path $runDir 'lock-diff'
+        $artifactDir = Join-Path $runDir 'proposed-diff'
         New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
         [IO.File]::WriteAllText((Join-Path $artifactDir 'proposed.diff'), "$text`n", [Text.UTF8Encoding]::new($false))
-        $artifact = Get-DiffArtifact
-        Out 'lock-diff-dir' $artifactDir
-        Out 'lock-diff-artifact' $artifact
+        $artifact = Get-DiffArtifact 'raeva-lock-proposed' "$env:JAVA_HOME"
+        Out 'proposed-dir' $artifactDir
+        Out 'proposed-artifact' $artifact
         $lines = $text -split "`n"
         if ($lines.Count -gt 200) {
             $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"

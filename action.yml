@@ -263,16 +263,26 @@ runs:
         INPUT_PROPERTIES: ${{ inputs.properties }}
         UPLOAD_TOKEN: ${{ github.token }}
 
-    # A failed frozen check stops the steps after it, and its proposed lock
-    # is the diff most worth keeping, so this step runs after a failure too.
-    # Several jobs can write the same lock diff; a later upload replaces an
-    # earlier one, and a lost race only warns.
-    - if: "!cancelled() && (steps.scan-unix.outputs.lock-diff-dir || steps.scan-windows.outputs.lock-diff-dir)"
+    # A failed frozen check stops the steps after it, so the lock diff
+    # uploads run after a failure too. Jobs that write an artifact of the
+    # same name write the same diff; a later upload replaces an earlier one,
+    # and a lost race only warns.
+    - if: "!cancelled() && steps.scan-unix.outputs.lock-diff-dir"
       continue-on-error: true
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ${{ steps.scan-unix.outputs.lock-diff-artifact || steps.scan-windows.outputs.lock-diff-artifact }}
-        path: ${{ steps.scan-unix.outputs.lock-diff-dir || steps.scan-windows.outputs.lock-diff-dir }}
+        name: ${{ steps.scan-unix.outputs.lock-diff-artifact }}
+        path: ${{ steps.scan-unix.outputs.lock-diff-dir }}
+        retention-days: 7
+        overwrite: true
+        if-no-files-found: ignore
+
+    - if: "!cancelled() && (steps.scan-unix.outputs.proposed-dir || steps.scan-windows.outputs.proposed-dir)"
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.scan-unix.outputs.proposed-artifact || steps.scan-windows.outputs.proposed-artifact }}
+        path: ${{ steps.scan-unix.outputs.proposed-dir || steps.scan-windows.outputs.proposed-dir }}
         retention-days: 7
         overwrite: true
         if-no-files-found: ignore

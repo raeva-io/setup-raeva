@@ -66,7 +66,7 @@ cat > "$stub" <<'EOF'
 [[ -z "${STUB_ARGS:-}" ]] || { printf '%s\n' "$@" "GH_TOKEN=${GH_TOKEN-unset}" >> "$STUB_ARGS"; }
 case " $* " in
   *" sync --frozen "*)
-    echo '::error title=evil::from sync --frozen' >&2
+    printf '::error title=evil::from sync --frozen' >&2
     printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null},{"code":"HTTP_REPO_BLOCKED","message":"http repository in a POM","context":null}]}}'
     exit 7 ;;
   *" vuln "*" --vex "*)
@@ -81,7 +81,7 @@ case " $* " in
     seq 1 50000
     exit 0 ;;
   *" sync "*)
-    echo '::error title=evil::from raeva sync' >&2
+    printf '::error title=evil::from raeva sync' >&2
     # A plain sync rewrites the lock in the -C directory.
     while [[ $# -gt 0 && "$1" != -C ]]; do shift; done
     printf '# written again\n' >> "${2:-.}/raeva.lock"
@@ -315,6 +315,7 @@ for i in "${!install_variants[@]}"; do
     && ok "$tag: summary text sits in a four-backtick fence" || bad "$tag: summary text sits in a four-backtick fence"
 
   # Each argument reaches raeva as one argument, and the token never does.
+  # shellcheck disable=SC1003
   odd='dir with "quotes" and a trailing backslash\'
   # shellcheck disable=SC2086
   run_env "$tag-stub-args" env RAEVA_BIN="$stub" STUB_ARGS="$scratch/args-$tag" GH_TOKEN=not-for-raeva \
@@ -497,7 +498,7 @@ for i in "${!check_variants[@]}"; do
   # shellcheck disable=SC2086
   run_env "$tag-proposed" env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" STUB_ARGS="$scratch/proposed-args-$tag" \
     GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-bot.json" GITHUB_REPOSITORY=o/r INPUT_LOCK_DIFF=false \
-    INPUT_CHECK=true INPUT_PROFILES=ci INPUT_SETTINGS=ci.xml INPUT_WORKING_DIRECTORY=pr-project $chk scan
+    INPUT_CHECK=true INPUT_PROFILES=ci INPUT_SETTINGS=ci.xml INPUT_PROPERTIES="who=O'Brien" INPUT_WORKING_DIRECTORY=pr-project $chk scan
   expect "$tag: a stale bot lock still fails the check" 7 $?
   plog="$scratch/run-$tag-proposed/log"
   psum="$scratch/run-$tag-proposed/summary"
@@ -505,16 +506,28 @@ for i in "${!check_variants[@]}"; do
   has "$psum" "^### Proposed raeva.lock, not committed" && ok "$tag: proposed lock in the summary" || bad "$tag: proposed lock in the summary"
   [[ $(grep -n 'failed with exit 7' "$psum" | cut -d: -f1) -lt $(grep -n 'Proposed raeva.lock' "$psum" | cut -d: -f1) ]] \
     && ok "$tag: the error comes first" || bad "$tag: the error comes first"
-  grep -qxF "raeva -C pr-project sync --settings=ci.xml --activate-profiles=ci" "$psum" && ok "$tag: the fixing command" || bad "$tag: the fixing command ($(grep 'raeva -C' "$psum"))"
-  has "$psum" "more lines; the full diff is proposed.diff in the raeva-lock-diff-pr-project-" && ok "$tag: proposed diff cut, with the artifact named" || bad "$tag: proposed diff cut, with the artifact named"
+  fix=$(grep '^raeva -C' "$psum")
+  if [[ $tag == bash ]]; then
+    words=()
+    eval "words=($fix)"
+    [[ "$(printf '%s|' "${words[@]}")" == "raeva|-C|pr-project|sync|--settings=ci.xml|--activate-profiles=ci|--define=who=O'Brien|" ]] \
+      && ok "$tag: the fixing command" || bad "$tag: the fixing command ($fix)"
+  else
+    [[ "$fix" == "raeva -C pr-project sync --settings=ci.xml --activate-profiles=ci '--define=who=O''Brien'" ]] \
+      && ok "$tag: the fixing command" || bad "$tag: the fixing command ($fix)"
+  fi
+  has "$psum" "more lines; the full diff is proposed.diff in the raeva-lock-proposed-pr-project-" && ok "$tag: proposed diff cut, with the artifact named" || bad "$tag: proposed diff cut, with the artifact named"
+  [[ "$(output_of "$tag-proposed" proposed-artifact)" =~ ^raeva-lock-proposed-pr-project-[0-9a-f]{8}$ ]] && ok "$tag: proposed artifact name" || bad "$tag: proposed artifact name"
+  [[ -z "$(output_of "$tag-proposed" lock-diff-dir)" ]] && ok "$tag: the proposed lock leaves the pull request diff artifact alone" || bad "$tag: the proposed lock leaves the pull request diff artifact alone"
   cmp -s "$prdir/raeva.lock" "$scratch/pr-before.lock" && ok "$tag: the committed lock is untouched" || bad "$tag: the committed lock is untouched"
-  pdir=$(output_of "$tag-proposed" lock-diff-dir)
+  pdir=$(output_of "$tag-proposed" proposed-dir)
   [[ $(wc -l < "$pdir/proposed.diff" 2>/dev/null) -eq 50000 ]] && ok "$tag: full proposed diff in the artifact directory" || bad "$tag: full proposed diff in the artifact directory"
   [[ -n "$pdir" && ! -e "$(dirname "$pdir")/proposed" ]] && ok "$tag: the copy is removed" || bad "$tag: the copy is removed"
-  [[ "$(tr '\n' '|' < "$scratch/proposed-args-$tag")" == *"|sync|--settings=ci.xml|--activate-profiles=ci|--platforms|linux-x86_64|"* ]] \
+  [[ "$(tr '\n' '|' < "$scratch/proposed-args-$tag")" == *"|sync|--settings=ci.xml|--activate-profiles=ci|--define=who=O'Brien|--platforms|linux-x86_64|"* ]] \
     && ok "$tag: the proposed lock keeps the recorded platforms and options" || bad "$tag: the proposed lock keeps the recorded platforms and options"
   between "$plog" "::error title=evil::from raeva sync" && ok "$tag: raeva sync output cannot run workflow commands" || bad "$tag: raeva sync output cannot run workflow commands"
   between "$plog" "::error title=evil::from sync --frozen" && ok "$tag: frozen check output cannot run workflow commands" || bad "$tag: frozen check output cannot run workflow commands"
+  grep -qx '::endgroup::' "$plog" && ok "$tag: workflow commands resume after output without a newline" || bad "$tag: workflow commands resume after output without a newline"
   # A settings file of the runner is left out of the command, and said so.
   # shellcheck disable=SC2086
   run_env "$tag-proposed-abs" env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" \

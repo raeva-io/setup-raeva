@@ -66,11 +66,11 @@ cat > "$stub" <<'EOF'
 [[ -z "${STUB_ARGS:-}" ]] || { printf '%s\n' "$@" "GH_TOKEN=${GH_TOKEN-unset}" >> "$STUB_ARGS"; }
 case " $* " in
   *" sync --frozen "*)
-    printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null}]}}'
+    printf '%s\n' '{"success":false,"exit_code":7,"code":"LOCKFILE_MISMATCH","error":"dependencies would change:\n  gson  2.13.2 -> 2.13.1\n  ```` evil","hints":["Run raeva sync --platforms linux-x86_64 and commit raeva.lock"],"data":{"warnings":[{"code":"AUTH_FALLBACK","message":"central refused, mirror served","context":{"url":"https://mirror.example/"}},{"code":"AUTH_FALLBACK","message":"second","context":null},{"code":"HTTP_REPO_BLOCKED","message":"http repository in a POM","context":null}]}}'
     exit 7 ;;
   *" vuln "*" --vex "*)
     # Three results: no suppressions, an empty list, and one VEX suppressed.
-    printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"raeva"}},"results":[{"ruleId":"GHSA-a","message":{"text":"m"}},{"ruleId":"GHSA-b","message":{"text":"m"},"suppressions":[]},{"ruleId":"GHSA-c","message":{"text":"m"},"suppressions":[{"kind":"external","status":"accepted"}]}]}]}'
+    printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"raeva"}},"results":[{"ruleId":"GHSA-a","message":{"text":"m"},"properties":{"severity":"High","dependencyPurl":"pkg:maven/a/b@1|`x`","fixedVersion":"2"}},{"ruleId":"GHSA-b","message":{"text":"m"},"suppressions":[]},{"ruleId":"GHSA-c","message":{"text":"m"},"properties":{"severity":"Critical"},"suppressions":[{"kind":"external","status":"accepted"}]}]}]}'
     exit 0 ;;
   *" vuln "*)
     [[ -n "${STUB_NO_SARIF:-}" ]] && { echo "error: no lock" >&2; exit 3; }
@@ -88,6 +88,57 @@ esac
 exit 99
 EOF
 chmod +x "$stub"
+
+# A stand-in for curl that answers every request with STUB_CURL_STATUS and
+# the file STUB_CURL_BODY, and records the URL in STUB_CURL_LOG.
+mkdir -p "$scratch/fake-curl"
+cat > "$scratch/fake-curl/curl" <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+body="" url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|-H|-w|--proto|--retry) [[ "$1" != -o ]] || body="$2"; shift ;;
+    -*) ;;
+    *) url="$1" ;;
+  esac
+  shift
+done
+[[ -z "${STUB_CURL_LOG:-}" ]] || echo "$url" >> "$STUB_CURL_LOG"
+[[ -z "$body" || -z "${STUB_CURL_BODY:-}" ]] || cp "$STUB_CURL_BODY" "$body"
+printf '%s' "${STUB_CURL_STATUS:-200}"
+EOF
+chmod +x "$scratch/fake-curl/curl"
+fake_path="$scratch/fake-curl:$PATH"
+
+# pwsh has no curl to replace, so a local server answers 403 as code
+# scanning does for a private repository without Code Security.
+api_port=""
+if [[ -n "${PWSH:-}" ]]; then
+  python3 -I -c '
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"{\"message\":\"Advanced Security must be enabled for this repository to use code scanning.\"}"
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(server.server_port))
+server.serve_forever()
+' "$scratch/api-port" &
+  api_pid=$!
+  trap 'kill "$api_pid" 2>/dev/null; [[ -n "${KEEP:-}" ]] || rm -rf "$scratch"' EXIT
+  for _ in $(seq 50); do
+    [[ -s "$scratch/api-port" ]] && break
+    python3 -c 'import time; time.sleep(0.1)'
+  done
+  api_port=$(cat "$scratch/api-port" 2>/dev/null)
+fi
 
 install_variants=("bash $here/scripts/install.sh")
 check_variants=("bash $here/scripts/check.sh")
@@ -237,6 +288,13 @@ for i in "${!install_variants[@]}"; do
   # shellcheck disable=SC2086
   run_env "$tag-gate-err" env VULN_EXIT_CODE=4 INPUT_VULN_FAIL_ON=never $chk gate
   expect "$tag: gate fails when the scan did not complete" 4 $?
+  # With never, raeva itself reports the findings and exits 0.
+  # shellcheck disable=SC2086
+  run_env "$tag-vuln-never" env RAEVA_BIN="$raeva" INPUT_VULN=true INPUT_VULN_FAIL_ON=never \
+    INPUT_WORKING_DIRECTORY="$VULN_PROJECT" $chk scan
+  [[ "$(output_of "$tag-vuln-never" vuln-exit-code)" == 0 && "$(output_of "$tag-vuln-never" vuln-findings)" -gt 0 ]] \
+    && ok "$tag: raeva vuln --fail-on never reports and exits 0" || bad "$tag: raeva vuln --fail-on never reports and exits 0"
+  has "$scratch/run-$tag-vuln-never/summary" '^| Critical | GHSA-' && ok "$tag: findings table from a real scan" || bad "$tag: findings table from a real scan"
 
   # The CLI's own hints and warnings reach the annotations and the summary.
   # shellcheck disable=SC2086
@@ -248,6 +306,8 @@ for i in "${!install_variants[@]}"; do
   has "$log" "^::warning title=raeva AUTH_FALLBACK::central refused, mirror served (url=https://mirror.example/); and 1 more" && ok "$tag: one warning annotation per code" || bad "$tag: one warning annotation per code"
   [[ $(grep -c "^::warning title=raeva AUTH_FALLBACK" "$log") -eq 1 ]] && ok "$tag: no repeated warning annotation" || bad "$tag: no repeated warning annotation"
   has "$scratch/run-$tag-stub-frozen/summary" "gson  2.13.2 -> 2.13.1" && ok "$tag: summary lists the change" || bad "$tag: summary lists the change"
+  has "$log" "^::warning title=raeva HTTP_REPO_BLOCKED" && bad "$tag: no HTTP_REPO_BLOCKED annotation" || ok "$tag: no HTTP_REPO_BLOCKED annotation"
+  has "$scratch/run-$tag-stub-frozen/summary" "HTTP_REPO_BLOCKED http repository in a POM" && ok "$tag: HTTP_REPO_BLOCKED stays in the summary" || bad "$tag: HTTP_REPO_BLOCKED stays in the summary"
   has "$scratch/run-$tag-stub-frozen/summary" "''''" && ok "$tag: summary fence cannot be closed" || bad "$tag: summary fence cannot be closed"
   grep -qx '````text' "$scratch/run-$tag-stub-frozen/summary" && grep -qx '````' "$scratch/run-$tag-stub-frozen/summary" \
     && ok "$tag: summary text sits in a four-backtick fence" || bad "$tag: summary text sits in a four-backtick fence"
@@ -311,10 +371,114 @@ for i in "${!install_variants[@]}"; do
     && ok "$tag: one --vex per line" || bad "$tag: one --vex per line ($(tr '\n' '|' < "$scratch/vex-args-$tag"))"
   [[ "$(output_of "$tag-stub-vex" vuln-findings)" == 2 ]] && ok "$tag: suppressed results are not findings" || bad "$tag: suppressed results are not findings ($(output_of "$tag-stub-vex" vuln-findings))"
   has "$scratch/run-$tag-stub-vex/summary" "2 finding(s), and 1 suppressed by VEX" && ok "$tag: summary counts suppressed results" || bad "$tag: summary counts suppressed results"
+  # The findings table: most severe first, suppressed rows last, and the
+  # cells escaped.
+  vsum="$scratch/run-$tag-stub-vex/summary"
+  grep -qxF '| Severity | Advisory | Dependency | Fixed in | VEX |' "$vsum" && ok "$tag: findings table" || bad "$tag: findings table"
+  grep -qxF '| High | GHSA-a | pkg:maven/a/b@1\|\`x\` | 2 |  |' "$vsum" && ok "$tag: table cells escaped" || bad "$tag: table cells escaped ($(grep 'GHSA-a' "$vsum"))"
+  [[ "$(grep -o 'GHSA-[abc]' "$vsum" | tr -d '\n')" == GHSA-aGHSA-bGHSA-c ]] && ok "$tag: table order" || bad "$tag: table order ($(grep -o 'GHSA-[abc]' "$vsum" | tr -d '\n'))"
+  grep -qxF '| Critical | GHSA-c |  |  | suppressed |' "$vsum" && ok "$tag: suppressed row marked" || bad "$tag: suppressed row marked"
+  [[ "$(tr '\n' '|' < "$scratch/vex-args-$tag")" == *"|--fail-on|high|"* ]] && ok "$tag: vuln-fail-on reaches raeva" || bad "$tag: vuln-fail-on reaches raeva"
+  [[ -z "$(output_of "$tag-stub-vex" sarif-upload)" ]] && ok "$tag: no upload unless asked" || bad "$tag: no upload unless asked"
+  # never reaches raeva as it is, and each invocation keeps its own log.
+  shared="$scratch/shared-temp-$tag"
+  mkdir -p "$shared"
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-never" env RAEVA_BIN="$stub" STUB_ARGS="$scratch/never-args-$tag" INPUT_VULN=true \
+    INPUT_VULN_FAIL_ON=never INPUT_VEX=v.json RUNNER_TEMP="$shared" $chk scan
+  [[ "$(tr '\n' '|' < "$scratch/never-args-$tag")" == *"|--fail-on|never|"* ]] && ok "$tag: never reaches raeva" || bad "$tag: never reaches raeva"
+  has "$scratch/run-$tag-stub-never/summary" "findings do not fail the job" && ok "$tag: summary says never does not gate" || bad "$tag: summary says never does not gate"
+  # shellcheck disable=SC2086
+  run_env "$tag-stub-second" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json RUNNER_TEMP="$shared" $chk scan
+  first=$(output_of "$tag-stub-never" sarif-file)
+  second=$(output_of "$tag-stub-second" sarif-file)
+  [[ -s "$first" && -s "$second" && "$first" != "$second" ]] && ok "$tag: one SARIF path per invocation" || bad "$tag: one SARIF path per invocation ($first, $second)"
   # shellcheck disable=SC2086
   run_env "$tag-stub-nolog" env RAEVA_BIN="$stub" STUB_NO_SARIF=1 INPUT_VULN=true $chk scan
   [[ -z "$(output_of "$tag-stub-nolog" sarif-file)" ]] && ok "$tag: no sarif-file without a log" || bad "$tag: no sarif-file without a log"
+
+  if [[ $tag == pwsh ]]; then
+    # shellcheck disable=SC2086
+    run_env "$tag-diff-only" env RAEVA_BIN="$stub" INPUT_LOCK_DIFF=only $chk scan
+    expect "$tag: lock-diff: only fails on Windows" 1 $?
+    has "$scratch/run-$tag-diff-only/log" "lock-diff: only runs on Linux and macOS" && ok "$tag: says why lock-diff: only failed" || bad "$tag: says why lock-diff: only failed"
+    if [[ -n "$api_port" ]]; then
+      # shellcheck disable=SC2086
+      run_env "$tag-probe-403" env RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json INPUT_SARIF_UPLOAD=true \
+        GITHUB_REPOSITORY=o/r GITHUB_API_URL="http://127.0.0.1:$api_port" GH_TOKEN=t $chk scan
+      expect "$tag: a refused probe does not fail the scan" 0 $?
+      [[ -z "$(output_of "$tag-probe-403" sarif-upload)" ]] && ok "$tag: no upload after a 403" || bad "$tag: no upload after a 403"
+      [[ $(grep -c '^::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 (Advanced Security must be enabled' "$scratch/run-$tag-probe-403/log") -eq 1 ]] \
+        && ok "$tag: one notice for a refused upload" || bad "$tag: one notice for a refused upload"
+    else
+      bad "$tag: local API server did not start"
+    fi
+  fi
 done
+
+# The SARIF upload probe: a 403 skips the upload with one notice, and any
+# other answer leaves the upload to try.
+printf '{"message":"Advanced Security must be enabled for this repository to use code scanning."}' > "$scratch/403.json"
+run_env probe-403 env PATH="$fake_path" STUB_CURL_STATUS=403 STUB_CURL_BODY="$scratch/403.json" STUB_CURL_LOG="$scratch/probe-urls" \
+  RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GH_TOKEN=t \
+  bash "$here/scripts/check.sh" scan
+expect "bash: a refused probe does not fail the scan" 0 $?
+[[ -z "$(output_of probe-403 sarif-upload)" ]] && ok "bash: no upload after a 403" || bad "bash: no upload after a 403"
+[[ $(grep -c '^::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 (Advanced Security must be enabled' "$scratch/run-probe-403/log") -eq 1 ]] \
+  && ok "bash: one notice for a refused upload" || bad "bash: one notice for a refused upload"
+grep -qxF 'https://api.github.com/repos/o/r/code-scanning/alerts?per_page=1' "$scratch/probe-urls" && ok "bash: the probe asks code scanning" || bad "bash: the probe asks code scanning"
+has "$scratch/run-probe-403/summary" '^| High | GHSA-a ' && ok "bash: findings table without an upload" || bad "bash: findings table without an upload"
+printf '{"message":"no analysis found"}' > "$scratch/404.json"
+run_env probe-404 env PATH="$fake_path" STUB_CURL_STATUS=404 STUB_CURL_BODY="$scratch/404.json" \
+  RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GH_TOKEN=t \
+  bash "$here/scripts/check.sh" scan
+[[ "$(output_of probe-404 sarif-upload)" == true ]] && ok "bash: upload when code scanning has no analysis yet" || bad "bash: upload when code scanning has no analysis yet"
+has "$scratch/run-probe-404/log" "::notice" && bad "bash: no notice when the upload can run" || ok "bash: no notice when the upload can run"
+
+# A pull request's lock diff goes to the summary and, in full, to the
+# artifact directory.
+prdir="$scratch/pr-project"
+mkdir -p "$prdir"
+printf 'platform = "linux-x86_64"\n' > "$prdir/raeva.lock"
+printf 'platform = "macos-aarch64"\n' > "$scratch/base.lock"
+base_sha=$(printf '0%.0s' {1..40})
+printf '{"pull_request":{"base":{"sha":"%s"},"user":{"login":"dependabot[bot]","type":"Bot"}}}' "$base_sha" > "$scratch/event-bot.json"
+printf '{"pull_request":{"base":{"sha":"%s"},"user":{"login":"someone","type":"User"}}}' "$base_sha" > "$scratch/event-user.json"
+run_env pr-diff env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=200 STUB_CURL_BODY="$scratch/base.lock" RAEVA_BIN="$stub" \
+  GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-user.json" GITHUB_REPOSITORY=o/r \
+  INPUT_LOCK_DIFF=only INPUT_WORKING_DIRECTORY=pr-project bash "$here/scripts/check.sh" scan
+expect "bash: lock diff of a pull request" 0 $?
+ddir=$(output_of pr-diff lock-diff-dir)
+[[ $(wc -l < "$ddir/raeva.lock.diff" 2>/dev/null) -eq 50000 ]] && ok "bash: full lock diff in the artifact directory" || bad "bash: full lock diff in the artifact directory"
+[[ "$(output_of pr-diff lock-diff-artifact)" == raeva-lock-diff-pr-project ]] \
+  && ok "bash: artifact named after the working directory" || bad "bash: artifact named after the working directory ($(output_of pr-diff lock-diff-artifact))"
+has "$scratch/run-pr-diff/summary" "the full diff is raeva.lock.diff in the raeva-lock-diff-" && ok "bash: summary points to the artifact" || bad "bash: summary points to the artifact"
+
+# A bot's pull request with a stale lock: the check fails as before, and the
+# summary also shows the lock raeva sync would write, made in a copy.
+cp "$prdir/raeva.lock" "$scratch/pr-before.lock"
+run_env proposed env -C "$scratch" PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" STUB_ARGS="$scratch/proposed-args" \
+  GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-bot.json" GITHUB_REPOSITORY=o/r \
+  INPUT_CHECK=true INPUT_PROFILES=ci INPUT_SETTINGS=ci.xml INPUT_WORKING_DIRECTORY=pr-project bash "$here/scripts/check.sh" scan
+expect "bash: a stale bot lock still fails the check" 7 $?
+plog="$scratch/run-proposed/log"
+psum="$scratch/run-proposed/summary"
+has "$plog" '^::error file=.*title=raeva sync --frozen (exit 7%2C LOCKFILE_MISMATCH)::' && ok "bash: the original error stays" || bad "bash: the original error stays"
+has "$psum" "^### Proposed raeva.lock, not committed" && ok "bash: proposed lock in the summary" || bad "bash: proposed lock in the summary"
+[[ $(grep -n 'failed with exit 7' "$psum" | cut -d: -f1) -lt $(grep -n 'Proposed raeva.lock' "$psum" | cut -d: -f1) ]] \
+  && ok "bash: the error comes first" || bad "bash: the error comes first"
+grep -qxF "raeva -C pr-project sync --activate-profiles=ci" "$psum" && ok "bash: the fixing command" || bad "bash: the fixing command ($(grep 'raeva -C' "$psum"))"
+cmp -s "$prdir/raeva.lock" "$scratch/pr-before.lock" && ok "bash: the committed lock is untouched" || bad "bash: the committed lock is untouched"
+pdir=$(output_of proposed lock-diff-dir)
+[[ -s "$pdir/proposed.diff" ]] && ok "bash: proposed diff in the artifact directory" || bad "bash: proposed diff in the artifact directory"
+[[ -n "$pdir" && ! -e "$(dirname "$pdir")/proposed" ]] && ok "bash: the copy is removed" || bad "bash: the copy is removed"
+[[ "$(tr '\n' '|' < "$scratch/proposed-args")" == *"|sync|--settings=ci.xml|--activate-profiles=ci|--platforms|linux-x86_64|"* ]] \
+  && ok "bash: the proposed lock keeps the recorded platforms and options" || bad "bash: the proposed lock keeps the recorded platforms and options"
+run_env proposed-user env PATH="$fake_path" STUB_CURL_STATUS=404 RAEVA_BIN="$stub" \
+  GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$scratch/event-user.json" GITHUB_REPOSITORY=o/r \
+  INPUT_CHECK=true INPUT_WORKING_DIRECTORY="$prdir" bash "$here/scripts/check.sh" scan
+expect "bash: a stale lock from a person fails" 7 $?
+has "$scratch/run-proposed-user/summary" "Proposed raeva.lock" && bad "bash: no proposed lock for a person's pull request" || ok "bash: no proposed lock for a person's pull request"
 
 # A relock whose lock diff is longer than a pipe buffer still succeeds, with
 # the summary cut to 200 lines.

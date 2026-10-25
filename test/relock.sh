@@ -119,6 +119,7 @@ run_push_job() { # <workdir> <uploaded file, artifact directory, or ->...
     RUNNER_TEMP="$dir.temp" GITHUB_OUTPUT="$dir.out" bash -e "$t/found.sh" > "$dir.log" 2>&1 || return $?
   if grep -q '^any=true$' "$dir.out"; then
     git clone --quiet "$t/remote.git" "$dir" && git -C "$dir" checkout --quiet "$head_sha" || return 1
+    [[ -z "${BROKEN_ORIGIN:-}" ]] || git -C "$dir" remote set-url origin "$t/missing.git"
     (cd "$dir" && env ROOTS="${TEST_ROOTS:-[\".\", \"services/api/\"]}" HEAD_REF="$branch" HEAD_SHA="$head_sha" \
       TOKEN=not-a-real-token RUNNER_TEMP="$dir.temp" bash -e "$t/push.sh" >> "$dir.log" 2>&1)
   fi
@@ -191,6 +192,11 @@ git -C "$t/dev" push --quiet origin "$branch"
 run_push_job "$t/push-again" "$root_tar" "$unchanged"
 code=$?
 [[ $code -eq 0 ]] && grep -q "moved since this run started" "$t/push-again.log" && ok "a lost push race ends without an error" || { bad "a lost push race ends without an error (exit $code)"; cat "$t/push-again.log"; }
+
+BROKEN_ORIGIN=1 run_push_job "$t/push-broken" "$root_tar" "$unchanged"
+code=$?
+[[ $code -ne 0 ]] && ! grep -q "moved since this run started" "$t/push-broken.log" \
+  && ok "an unreachable remote fails the push job" || bad "an unreachable remote fails the push job (exit $code)"
 
 run_push_job "$t/push-missing" "$unchanged" -
 code=$?

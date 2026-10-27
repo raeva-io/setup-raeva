@@ -230,6 +230,8 @@ for tag in "${variants[@]}"; do
     run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only "$error=4" "${check[@]}" scan
     expect "$tag: report-only preserves $error" 4 $?
   done
+  has "$t/summary" 'gson 2.13.2 -> 2.13.1' && has "$(output proposed-diff)" 'gson 2.13.2 -> 2.13.1' \
+    && ok "$tag: a failed lock diff keeps its output" || bad "$tag: a failed lock diff keeps its output"
   run env INPUT_CHECK_MODE=wrong "${check[@]}" scan
   expect "$tag: rejects invalid check-mode" 2 $?
   run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_VULN=true SCAN_CODE=4 "${check[@]}" scan

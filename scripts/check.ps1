@@ -233,10 +233,7 @@ function Invoke-Proposed {
         $diffOut = Join-Path $runDir 'diff.out'
         $diffErr = Join-Path $runDir 'diff.err'
         $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $committed, $lock) $diffOut $diffErr
-        if ($diffCode -ne 0) {
-            Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)."
-            if ($checkMode -eq 'report-only') { exit $diffCode }
-        }
+        if ($diffCode -ne 0) { Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)." }
         $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
         $artifactDir = Join-Path $runDir 'proposed-diff'
         New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
@@ -250,6 +247,7 @@ function Invoke-Proposed {
             $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"
         }
         Fenced $text
+        if ($diffCode -ne 0 -and $checkMode -eq 'report-only') { exit $diffCode }
     }
 }
 

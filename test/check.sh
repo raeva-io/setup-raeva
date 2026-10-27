@@ -45,6 +45,7 @@ case "$1" in
     printf 'gson 2.13.2 -> 2.13.1\n'
     exit "${DIFF_CODE:-0}" ;;
   vuln)
+    rm -f "$TEST_DIR/scanned.lock"; [[ ! -f "$work/raeva.lock" ]] || cp "$work/raeva.lock" "$TEST_DIR/scanned.lock"
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == --baseline ]]; then
         cmp "$2" "$TEST_DIR/original.lock"
@@ -150,7 +151,7 @@ for tag in "${variants[@]}"; do
   has "$t/summary" 'gson 2.13.2 -> 2.13.1' && has "$t/summary" "$(output fix-command)" \
     && ok "$tag: summary has diff and fix command" || bad "$tag: summary has diff and fix command"
   cmp -s "$t/project/raeva.lock" "$t/original.lock" && ok "$tag: committed lock stays unchanged" || bad "$tag: committed lock changed"
-  [[ -z "$(find "$t/temp" -type d -name proposed -print)" ]] && ok "$tag: removes proposed copy" || bad "$tag: proposed copy remains"
+  [[ -z "$(find "$t/temp" -name committed.lock -print)" ]] && ok "$tag: puts the committed lock back" || bad "$tag: committed lock copy remains"
   for code in 3 4; do
     run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only FROZEN_CODE="$code" "${check[@]}" scan
     expect "$tag: report-only preserves check error $code" "$code" $?
@@ -163,6 +164,12 @@ for tag in "${variants[@]}"; do
   expect "$tag: rejects invalid check-mode" 2 $?
   run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_VULN=true SCAN_CODE=4 "${check[@]}" scan
   [[ "$(output vuln-exit-code)" == 4 ]] && ok "$tag: report-only still scans" || bad "$tag: report-only still scans"
+  has "$t/scanned.lock" '# proposed' && has "$t/summary" 'the scan reads the proposed lock' \
+    && ok "$tag: report-only scans the proposed lock" || bad "$tag: report-only scans the proposed lock"
+  cmp -s "$t/project/raeva.lock" "$t/original.lock" && ok "$tag: committed lock is back after the scan" || bad "$tag: committed lock changed by the scan"
+  run env INPUT_CHECK=true FROZEN_CODE=0 INPUT_VULN=true "${check[@]}" scan
+  ! has "$t/scanned.lock" '# proposed' && ! has "$t/summary" 'proposed lock' \
+    && ok "$tag: a current lock is scanned as committed" || bad "$tag: a current lock is scanned as committed"
   run env VULN_EXIT_CODE=4 INPUT_VULN_FAIL_ON=never "${check[@]}" gate
   expect "$tag: report-only scan errors fail at the gate" 4 $?
 

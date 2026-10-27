@@ -23,6 +23,7 @@ out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
 check_mode="${INPUT_CHECK_MODE:-blocking}"
 base_lock=""
 base_missing=false
+committed=""
 
 # A directory per invocation, so two roots checked in one job keep their own
 # SARIF logs and lock diffs until the upload steps read them.
@@ -223,8 +224,11 @@ diff_summary() { # <title, or empty for none> <old> <new> [diff|proposed]
 }
 
 # For report-only checks or a bot's stale lock, writes the lock diff that
-# `raeva sync` would commit. raeva writes it in a copy of the working
-# directory that is removed afterwards, so later steps see the committed lock.
+# `raeva sync` would commit. raeva writes it in place, where a parent POM or
+# file: repository outside the working directory resolves as it does for a
+# developer. The committed lock goes back when this script exits, so later
+# steps see it; a report-only scan in this step reads the proposed lock.
+restore_lock() { [[ -z "$committed" ]] || mv -f "$committed" "$workdir/raeva.lock"; }
 proposed() {
   if [[ "$check_mode" != report-only ]]; then
     [[ "${GITHUB_EVENT_NAME:-}" == pull_request* && -f "${GITHUB_EVENT_PATH:-}" ]] || return 0
@@ -232,16 +236,15 @@ proposed() {
     [[ "$(jq -r '.pull_request.user.type // empty' "$GITHUB_EVENT_PATH")" == Bot ]] || return 0
   fi
   [[ -f "$workdir/raeva.lock" ]] || return 0
-  local copy="$run/proposed" platforms="${INPUT_PLATFORMS:-}" code=0
+  local platforms="${INPUT_PLATFORMS:-}" code=0
   out fix-command "$(sync_command)"
-  mkdir -p "$copy" || return $?
-  tar -C "$workdir" --exclude=.git -cf - . | tar -C "$copy" -xf - || {
-    code=$?; rm -rf "${copy:?}"; return "$code"
-  }
-  [[ -n "$platforms" ]] || platforms=$(lock_platforms "$copy/raeva.lock")
-  local args=(-q -C "$copy" sync ${maven[@]+"${maven[@]}"})
+  cp -p "$workdir/raeva.lock" "$run/committed.lock" || return $?
+  committed="$run/committed.lock"
+  trap restore_lock EXIT
+  [[ -n "$platforms" ]] || platforms=$(lock_platforms "$committed")
+  local args=(-q -C "$workdir" sync ${maven[@]+"${maven[@]}"})
   [[ -z "$platforms" ]] || args+=(--platforms "$platforms")
-  echo "::group::raeva sync in a copy, for the proposed lock"
+  echo "::group::raeva sync, for the proposed lock"
   raw "$raeva" "${args[@]}" || code=$?
   echo "::endgroup::"
   printf '\n### Proposed raeva.lock, not committed\n' >> "$summary"
@@ -256,9 +259,8 @@ proposed() {
     if [[ "${INPUT_SETTINGS:-}" == /* ]]; then
       printf '\nThis job reads the settings file `%s`; run it with a settings file that has the same repositories and profiles.\n' "${INPUT_SETTINGS//\`/}" >> "$summary"
     fi
-    diff_summary "" "$workdir/raeva.lock" "$copy/raeva.lock" proposed || code=$?
+    diff_summary "" "$committed" "$workdir/raeva.lock" proposed || code=$?
   fi
-  rm -rf "${copy:?}"
   return "$code"
 }
 
@@ -380,6 +382,7 @@ vuln() {
   raw cat "$errlog"
   out vuln-exit-code "$code"
   printf '\n### Vulnerabilities\n' >> "$summary"
+  [[ -z "$committed" ]] || printf '\nThe committed lock is stale, so the scan reads the proposed lock.\n' >> "$summary"
   # An incomplete scan (exit 2 or more) still writes the findings it has, so
   # its log is uploaded; the gate step fails the job afterwards.
   if [[ $code -gt 1 ]] && ! jq -e '.runs | type == "array"' "$sarif" >/dev/null 2>&1; then

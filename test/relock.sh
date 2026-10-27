@@ -159,7 +159,7 @@ code=$?
 git clone --quiet --branch "$branch" "$t/remote.git" "$t/after"
 [[ "$(git -C "$t/after" log -1 --format=%s)" == "Update raeva.lock [dependabot skip]" ]] && ok "commit message lets Dependabot rebase" || bad "commit message"
 [[ "$(git -C "$t/after" diff --name-only HEAD~1 HEAD | tr '\n' ' ')" == "raeva.lock services/api/raeva.lock " ]] && ok "one commit changes both locks and nothing else" || bad "one commit changes both locks and nothing else"
-[[ "$(git -C "$t/after" log -1 --format=%ae)" == "285838596+torutofu@users.noreply.github.com" ]] && ok "commit author is torutofu" || bad "commit author"
+[[ "$(git -C "$t/after" log -1 --format=%ae)" == "41898282+github-actions[bot]@users.noreply.github.com" ]] && ok "commit author is github-actions[bot]" || bad "commit author"
 (cd "$t/after" && "$RAEVA_BUILD" -q sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "branch passes --frozen for every platform" || bad "branch passes --frozen for every platform"
 (cd "$t/after" && "$RAEVA_BUILD" -q -C services/api sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "second root passes --frozen" || bad "second root passes --frozen"
 

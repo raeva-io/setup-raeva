@@ -155,7 +155,7 @@ commit, drops the lock commit, and the workflow writes the lock again.
 Hosted Renovate (the Mend app) stays at Tier 3 for now. It stops rebasing a
 branch that has another author's commit. Its `gitIgnoredAuthors` setting with
 the lock commit's author,
-`["285838596+torutofu@users.noreply.github.com"]`, should let it
+`["41898282+github-actions[bot]@users.noreply.github.com"]`, should let it
 keep rebasing, but that is not yet verified through a conflict and a rebase,
 so `relock.yml` runs only for Dependabot. A self-hosted Renovate writes the
 lock itself with `postUpgradeTasks`, as in `examples/renovate-self-hosted.json`;

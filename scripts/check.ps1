@@ -15,6 +15,7 @@ $token = "$env:GH_TOKEN"
 $checkMode = if ($env:INPUT_CHECK_MODE) { $env:INPUT_CHECK_MODE } else { 'blocking' }
 $baseLock = ''
 $baseMissing = $false
+$committed = ''
 Remove-Item Env:GH_TOKEN, Env:UPLOAD_TOKEN -ErrorAction SilentlyContinue
 $api = if ($env:GITHUB_API_URL) { $env:GITHUB_API_URL } else { 'https://api.github.com' }
 
@@ -187,8 +188,13 @@ function Get-DiffArtifact([string]$Prefix, [string]$More) {
 }
 
 # For report-only checks or a bot's stale lock, writes the lock diff that
-# `raeva sync` would commit. raeva writes it in a copy of the working
-# directory that is removed afterwards, so later steps see the committed lock.
+# `raeva sync` would commit. raeva writes it in place, where a parent POM or
+# file: repository outside the working directory resolves as it does for a
+# developer. The committed lock goes back when this script ends, so later
+# steps see it; a report-only scan in this step reads the proposed lock.
+function Restore-Lock {
+    if ($script:committed) { Move-Item -LiteralPath $script:committed -Destination (Join-Path $workdir 'raeva.lock') -Force }
+}
 function Invoke-Proposed {
     if ($checkMode -ne 'report-only') {
         if (-not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request')) -or -not $env:GITHUB_EVENT_PATH -or
@@ -200,55 +206,48 @@ function Invoke-Proposed {
     $lock = Join-Path $workdir 'raeva.lock'
     if (-not (Test-Path -LiteralPath $lock)) { return }
     Out 'fix-command' (Get-SyncCommand)
-    $copy = Join-Path $runDir 'proposed'
-    try {
-        New-Item -ItemType Directory -Path $copy | Out-Null
-        Get-ChildItem -LiteralPath $workdir -Force | Where-Object { $_.Name -ne '.git' } | Copy-Item -Destination $copy -Recurse -Force
-        $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms (Join-Path $copy 'raeva.lock') }
-        $arguments = @('-q', '-C', $copy, 'sync') + $maven
-        if ($platforms) { $arguments += @('--platforms', $platforms) }
-        $syncOut = Join-Path $runDir 'proposed.out'
-        $syncErr = Join-Path $runDir 'proposed.err'
-        Write-Host '::group::raeva sync in a copy, for the proposed lock'
-        $code = Invoke-Raeva $arguments $syncOut $syncErr
-        Write-Raw @($syncOut, $syncErr)
-        Write-Host '::endgroup::'
-        Summary "`n### Proposed raeva.lock, not committed"
-        if ($code -ne 0) {
-            Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The check cannot complete."
-            if ($checkMode -eq 'report-only') { exit $code }
-        } else {
-            Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:"
-            Fenced (Get-SyncCommand)
-            if ($env:INPUT_PROPERTIES) {
-                Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
-            }
-            if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
-                Summary "`nThis job reads the settings file ``$($env:INPUT_SETTINGS.Replace('``', ''))``; run it with a settings file that has the same repositories and profiles."
-            }
-            $diffOut = Join-Path $runDir 'diff.out'
-            $diffErr = Join-Path $runDir 'diff.err'
-            $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $lock, (Join-Path $copy 'raeva.lock')) $diffOut $diffErr
-            if ($diffCode -ne 0) {
-                Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)."
-                if ($checkMode -eq 'report-only') { exit $diffCode }
-            }
-            $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
-            $artifactDir = Join-Path $runDir 'proposed-diff'
-            New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
-            [IO.File]::WriteAllText((Join-Path $artifactDir 'proposed.diff'), "$text`n", [Text.UTF8Encoding]::new($false))
-            $artifact = Get-DiffArtifact 'raeva-lock-proposed' "$env:JAVA_HOME"
-            Out 'proposed-diff' (Join-Path $artifactDir 'proposed.diff')
-            Out 'proposed-dir' $artifactDir
-            Out 'proposed-artifact' $artifact
-            $lines = $text -split "`n"
-            if ($lines.Count -gt 200) {
-                $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"
-            }
-            Fenced $text
+    Copy-Item -LiteralPath $lock -Destination (Join-Path $runDir 'committed.lock')
+    $script:committed = Join-Path $runDir 'committed.lock'
+    $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms $committed }
+    $arguments = @('-q', '-C', $workdir, 'sync') + $maven
+    if ($platforms) { $arguments += @('--platforms', $platforms) }
+    $syncOut = Join-Path $runDir 'proposed.out'
+    $syncErr = Join-Path $runDir 'proposed.err'
+    Write-Host '::group::raeva sync, for the proposed lock'
+    $code = Invoke-Raeva $arguments $syncOut $syncErr
+    Write-Raw @($syncOut, $syncErr)
+    Write-Host '::endgroup::'
+    Summary "`n### Proposed raeva.lock, not committed"
+    if ($code -ne 0) {
+        Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The check cannot complete."
+        if ($checkMode -eq 'report-only') { exit $code }
+    } else {
+        Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:"
+        Fenced (Get-SyncCommand)
+        if ($env:INPUT_PROPERTIES) {
+            Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
         }
-    } finally {
-        Remove-Item -LiteralPath $copy -Recurse -Force -ErrorAction SilentlyContinue
+        if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
+            Summary "`nThis job reads the settings file ``$($env:INPUT_SETTINGS.Replace('``', ''))``; run it with a settings file that has the same repositories and profiles."
+        }
+        $diffOut = Join-Path $runDir 'diff.out'
+        $diffErr = Join-Path $runDir 'diff.err'
+        $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $committed, $lock) $diffOut $diffErr
+        if ($diffCode -ne 0) { Summary "`n``raeva lock diff`` could not compare the locks (exit $diffCode)." }
+        $text = (([IO.File]::ReadAllText($diffOut) + [IO.File]::ReadAllText($diffErr)) -replace "`r", '').TrimEnd("`n")
+        $artifactDir = Join-Path $runDir 'proposed-diff'
+        New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $artifactDir 'proposed.diff'), "$text`n", [Text.UTF8Encoding]::new($false))
+        $artifact = Get-DiffArtifact 'raeva-lock-proposed' "$env:JAVA_HOME"
+        Out 'proposed-diff' (Join-Path $artifactDir 'proposed.diff')
+        Out 'proposed-dir' $artifactDir
+        Out 'proposed-artifact' $artifact
+        $lines = $text -split "`n"
+        if ($lines.Count -gt 200) {
+            $text = (($lines | Select-Object -First 200) -join "`n") + "`n... $($lines.Count - 200) more lines; the full diff is proposed.diff in the $artifact artifact"
+        }
+        Fenced $text
+        if ($diffCode -ne 0 -and $checkMode -eq 'report-only') { exit $diffCode }
     }
 }
 
@@ -387,6 +386,7 @@ function Invoke-Vuln {
     Write-Raw @($err)
     Out 'vuln-exit-code' $code
     Summary "`n### Vulnerabilities"
+    if ($committed) { Summary "`nThe committed lock is stale, so the scan reads the proposed lock." }
     # An incomplete scan (exit 2 or more) still writes the findings it has, so
     # its log is uploaded; the gate step fails the job afterwards.
     $log = $null
@@ -500,21 +500,25 @@ function Invoke-Gate {
     }
 }
 
-switch ($Mode) {
-    'scan' {
-        if ($checkMode -notin @('blocking', 'report-only')) {
-            Write-Output '::error title=setup-raeva::check-mode must be blocking or report-only'
-            exit 2
+try {
+    switch ($Mode) {
+        'scan' {
+            if ($checkMode -notin @('blocking', 'report-only')) {
+                Write-Output '::error title=setup-raeva::check-mode must be blocking or report-only'
+                exit 2
+            }
+            if ($env:INPUT_VULN -eq 'true' -and $env:INPUT_LOCK_DIFF -ne 'only') { Read-PrBaseline }
+            if ($env:INPUT_LOCK_DIFF -eq 'only') {
+                Write-Output '::error title=setup-raeva::lock-diff: only runs on Linux and macOS runners'
+                exit 1
+            }
+            if ($env:INPUT_CHECK -eq 'true') { Invoke-Frozen }
+            if ($env:INPUT_VULN -eq 'true') { Invoke-Vuln }
         }
-        if ($env:INPUT_VULN -eq 'true' -and $env:INPUT_LOCK_DIFF -ne 'only') { Read-PrBaseline }
-        if ($env:INPUT_LOCK_DIFF -eq 'only') {
-            Write-Output '::error title=setup-raeva::lock-diff: only runs on Linux and macOS runners'
-            exit 1
-        }
-        if ($env:INPUT_CHECK -eq 'true') { Invoke-Frozen }
-        if ($env:INPUT_VULN -eq 'true') { Invoke-Vuln }
+        'gate' { Invoke-Gate }
+        default { Write-Error 'usage: check.ps1 scan|gate'; exit 2 }
     }
-    'gate' { Invoke-Gate }
-    default { Write-Error 'usage: check.ps1 scan|gate'; exit 2 }
+} finally {
+    Restore-Lock
 }
 exit 0

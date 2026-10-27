@@ -45,6 +45,7 @@ case "$1" in
     printf 'gson 2.13.2 -> 2.13.1\n'
     exit "${DIFF_CODE:-0}" ;;
   vuln)
+    rm -f "$TEST_DIR/scanned.lock"; [[ ! -f "$work/raeva.lock" ]] || cp "$work/raeva.lock" "$TEST_DIR/scanned.lock"
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == --baseline ]]; then
         cmp "$2" "$TEST_DIR/original.lock"
@@ -135,6 +136,76 @@ run() {
     CHECK_SCRIPT="$here/scripts/check.ps1" "$@" > "$t/log" 2>&1
 }
 
+# action.yml reads each output from the Bash step or the PowerShell step of
+# the same job, so both must exist and the scripts must write the output.
+# Lock diffs and relock are Linux and macOS only.
+cat > "$t/steps.py" <<'PY'
+import re, sys, yaml
+from pathlib import Path
+root = Path(sys.argv[1])
+action = yaml.safe_load((root / 'action.yml').read_text())
+steps = action['runs']['steps']
+ids = {s['id'] for s in steps if 'id' in s}
+pairs = {'unix': 'windows', 'scan-unix': 'scan-windows'}
+pairs.update({w: u for u, w in pairs.items()})
+scripts = {'unix': 'install.sh', 'windows': 'install.ps1', 'relock': 'check.sh',
+           'scan-unix': 'check.sh', 'scan-windows': 'check.ps1'}
+unix_only = {'lock-diff-dir', 'lock-diff-artifact'}
+ref = re.compile(r'steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)')
+errors = []
+def strings(node):
+    if isinstance(node, dict):
+        for v in node.values():
+            yield from strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from strings(v)
+    elif isinstance(node, str):
+        yield node
+windows = {'windows', 'scan-windows'}
+def check(text, side):
+    for step, name in ref.findall(text):
+        if step not in ids:
+            errors.append(f'unknown step {step}')
+            continue
+        if step in scripts:
+            src = (root / 'scripts' / scripts[step]).read_text()
+            n = re.escape(name)
+            if not re.search(rf"\bout {n}\b|Out '{n}'|[\"']{n}<<", src):
+                errors.append(f'{scripts[step]} never writes {name}')
+        other = pairs.get(step)
+        if other and side and (side == 'windows') != (step in windows):
+            errors.append(f'a {side} step reads steps.{step}.outputs.{name}')
+        if other and not side and name not in unix_only and f'steps.{other}.outputs.{name}' not in text:
+            errors.append(f'steps.{step}.outputs.{name} without steps.{other}.outputs.{name}')
+for text in strings(action.get('outputs', {})):
+    check(text, None)
+for s in steps:
+    cond = str(s.get('if', ''))
+    side = 'windows' if "runner.os == 'Windows'" in cond else 'unix' if (
+        "runner.os != 'Windows'" in cond or 'RUNNER_OS' in str(s.get('run', ''))) else None
+    for text in strings(s):
+        check(text, side)
+print('\n'.join(errors))
+sys.exit(1 if errors else 0)
+PY
+python3 -I "$t/steps.py" "$here" > "$t/log" 2>&1 && ok "action outputs read both runner paths" || bad "action outputs read both runner paths"
+mkdir -p "$t/broken"
+cp -r "$here/scripts" "$t/broken/"
+sed 's/ || steps\.scan-windows\.outputs\.sarif-file//' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Unix-only output is caught" || ok "a Unix-only output is caught"
+sed '/sarif_file:/s/ || steps\.scan-windows\.outputs\.sarif-file//' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Unix-only input of one step is caught" || ok "a Unix-only input of one step is caught"
+sed 's/steps\.scan-windows\.outputs\.vuln-exit-code/steps.scan-unix.outputs.vuln-exit-code/' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Windows step reading the Bash step is caught" || ok "a Windows step reading the Bash step is caught"
+sed 's/steps\.windows\.outputs\.version/steps.install-win.outputs.version/' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an unknown step id is caught" || ok "an unknown step id is caught"
+# shellcheck disable=SC2016
+sed -i 's/Out .vuln-findings. \$count/Out "x" $count/' "$t/broken/scripts/check.ps1"
+cp "$here/action.yml" "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an output no script writes is caught" || ok "an output no script writes is caught"
+rm -rf "${t:?}/broken"
+
 variants=(bash)
 [[ -z "${PWSH:-}" ]] || variants+=(pwsh)
 for tag in "${variants[@]}"; do
@@ -150,7 +221,7 @@ for tag in "${variants[@]}"; do
   has "$t/summary" 'gson 2.13.2 -> 2.13.1' && has "$t/summary" "$(output fix-command)" \
     && ok "$tag: summary has diff and fix command" || bad "$tag: summary has diff and fix command"
   cmp -s "$t/project/raeva.lock" "$t/original.lock" && ok "$tag: committed lock stays unchanged" || bad "$tag: committed lock changed"
-  [[ -z "$(find "$t/temp" -type d -name proposed -print)" ]] && ok "$tag: removes proposed copy" || bad "$tag: proposed copy remains"
+  [[ -z "$(find "$t/temp" -name committed.lock -print)" ]] && ok "$tag: puts the committed lock back" || bad "$tag: committed lock copy remains"
   for code in 3 4; do
     run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only FROZEN_CODE="$code" "${check[@]}" scan
     expect "$tag: report-only preserves check error $code" "$code" $?
@@ -159,10 +230,18 @@ for tag in "${variants[@]}"; do
     run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only "$error=4" "${check[@]}" scan
     expect "$tag: report-only preserves $error" 4 $?
   done
+  has "$t/summary" 'gson 2.13.2 -> 2.13.1' && has "$(output proposed-diff)" 'gson 2.13.2 -> 2.13.1' \
+    && ok "$tag: a failed lock diff keeps its output" || bad "$tag: a failed lock diff keeps its output"
   run env INPUT_CHECK_MODE=wrong "${check[@]}" scan
   expect "$tag: rejects invalid check-mode" 2 $?
   run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_VULN=true SCAN_CODE=4 "${check[@]}" scan
   [[ "$(output vuln-exit-code)" == 4 ]] && ok "$tag: report-only still scans" || bad "$tag: report-only still scans"
+  has "$t/scanned.lock" '# proposed' && has "$t/summary" 'the scan reads the proposed lock' \
+    && ok "$tag: report-only scans the proposed lock" || bad "$tag: report-only scans the proposed lock"
+  cmp -s "$t/project/raeva.lock" "$t/original.lock" && ok "$tag: committed lock is back after the scan" || bad "$tag: committed lock changed by the scan"
+  run env INPUT_CHECK=true FROZEN_CODE=0 INPUT_VULN=true "${check[@]}" scan
+  ! has "$t/scanned.lock" '# proposed' && ! has "$t/summary" 'proposed lock' \
+    && ok "$tag: a current lock is scanned as committed" || bad "$tag: a current lock is scanned as committed"
   run env VULN_EXIT_CODE=4 INPUT_VULN_FAIL_ON=never "${check[@]}" gate
   expect "$tag: report-only scan errors fail at the gate" 4 $?
 

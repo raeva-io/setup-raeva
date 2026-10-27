@@ -47,8 +47,9 @@ the store and checks whether `raeva.lock` matches the POMs. Start with
 `check-mode: report-only`: stale or drifted locks produce a proposed diff and
 a fix command in the job summary. The `proposed-diff` output is the path of
 the full diff; `fix-command` is the command to regenerate the lock. The
-committed lock stays unchanged. Check errors, such as invalid locks or
-failed downloads, still fail the job.
+committed lock stays unchanged. With `vuln: true`, the scan reads the
+proposed lock, so a stale lock still gets scanned. Check errors, such as
+invalid locks or failed downloads, still fail the job.
 
 Remove `check-mode` when you want lock changes to fail the job. Its default
 is `blocking`. The check covers every platform the lock records, whatever
@@ -124,8 +125,8 @@ with. Set `JAVA_HOME` locally too: without it, raeva assumes Java 17.
 A dependency bot changes a POM but not `raeva.lock`, so the check fails on its
 pull request. The job summary then also shows the proposed lock, the diff
 that `raeva sync` would write, with the command that fixes it. raeva writes
-it in a copy that is removed afterwards: the check still fails, and later
-steps see the committed lock.
+it in the working directory, and the step puts the committed lock back: the
+check still fails, and later steps see the committed lock.
 
 There are three ways to get the lock commit:
 
@@ -397,8 +398,9 @@ cache grows until GitHub evicts it.
   with workflow commands turned off.
 - Text from raeva quotes POM and repository data, so the summary puts it in a
   fence it cannot close, and escapes Markdown in the findings table.
-- The proposed lock for report-only checks and bot pull requests comes from a `raeva sync` in a
-  copy of the working directory, removed before the step ends.
+- The proposed lock for report-only checks and bot pull requests comes from a
+  `raeva sync` in the working directory. The step puts the committed lock
+  back before it ends.
 - In `examples/relock.yml`, the push job gives git its token through the
   environment, not the command line.
 - The SARIF upload needs `security-events: write`, and in a private
@@ -421,7 +423,8 @@ composite action:
   with a three-platform lock), and `VULN_PROJECT`; `PWSH`, `GH_TOKEN`, and
   `RELEASE_VERSION` enable more tests.
 - `test/check.sh` tests report-only checks and PR baselines with fixed CLI
-  and API replies. `PWSH` enables the same cases in PowerShell.
+  and API replies. `PWSH` enables the same cases in PowerShell. It also
+  checks that each action output reads both the Bash and the PowerShell step.
 - `test/install.sh` tests glibc and musl selection with local release archives.
 - `test/relock.sh` runs the `run:` blocks of `examples/relock.yml` against a
   local bare repository with two Maven roots, including tampered artifacts

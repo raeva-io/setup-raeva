@@ -42,8 +42,9 @@ inputs:
   check-mode:
     description: >-
       'blocking' fails on a stale or drifted lock. 'report-only' reports the
-      proposed diff and fix command without failing on lock changes.
-      Other check errors still fail. Use with check: true.
+      proposed diff and fix command without failing on lock changes, and vuln
+      scans the proposed lock. Other check errors still fail. Use with
+      check: true.
     default: blocking
   platforms:
     description: >-

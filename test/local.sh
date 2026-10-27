@@ -143,6 +143,48 @@ server.serve_forever()
   api_port=$(cat "$scratch/api-port" 2>/dev/null)
 fi
 
+# A single module whose parent POM is one directory above it, as raeva
+# reads it. A drifted parent makes the module's lock stale.
+parent="$scratch/parent-project"
+mkdir -p "$parent/app"
+cat > "$parent/pom.xml" <<'EOF'
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.raeva.test</groupId>
+  <artifactId>local-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.google.code.gson</groupId>
+        <artifactId>gson</artifactId>
+        <version>2.13.2</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+EOF
+cat > "$parent/app/pom.xml" <<'EOF'
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.raeva.test</groupId>
+    <artifactId>local-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>local-app</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+EOF
+"$RAEVA_BUILD" -q -C "$parent/app" sync --platforms linux-x86_64 2>/dev/null || echo "cannot lock $parent/app"
+sed -i 's|<version>2.13.2</version>|<version>2.13.1</version>|' "$parent/pom.xml"
+
 install_variants=("bash $here/scripts/install.sh")
 check_variants=("bash $here/scripts/check.sh")
 if [[ -n "${PWSH:-}" ]]; then
@@ -265,6 +307,27 @@ for i in "${!install_variants[@]}"; do
     bad "$tag: escaped error annotation"
   fi
   has "$scratch/run-$tag-frozen-stale/summary" "failed with exit 7" && ok "$tag: step summary" || bad "$tag: step summary"
+
+  # Report-only on the stale lock: the scan reads the proposed lock, so a
+  # stale lock does not fail it, and the committed lock stays.
+  cp "$proj/raeva.lock" "$scratch/bumped-before-$tag.lock"
+  # shellcheck disable=SC2086
+  run_env "$tag-report-vuln" env RAEVA_BIN="$raeva" INPUT_CHECK=true INPUT_CHECK_MODE=report-only \
+    INPUT_VULN=true INPUT_VULN_FAIL_ON=never INPUT_WORKING_DIRECTORY="$proj" $chk scan
+  expect "$tag: report-only scan of a stale lock" 0 $?
+  [[ "$(output_of "$tag-report-vuln" vuln-exit-code)" == 0 ]] && ok "$tag: report-only scan completes" \
+    || bad "$tag: report-only scan completes (vuln-exit-code $(output_of "$tag-report-vuln" vuln-exit-code))"
+  has "$scratch/run-$tag-report-vuln/summary" 'the scan reads the proposed lock' && ok "$tag: summary names the scanned lock" || bad "$tag: summary names the scanned lock"
+  cmp -s "$proj/raeva.lock" "$scratch/bumped-before-$tag.lock" && ok "$tag: report-only scan keeps the committed lock" || bad "$tag: report-only scan keeps the committed lock"
+
+  # The proposed lock resolves the parent POM above the working directory.
+  cp -r "$parent" "$scratch/parent-$tag"
+  # shellcheck disable=SC2086
+  run_env "$tag-report-parent" env RAEVA_BIN="$raeva" INPUT_CHECK=true INPUT_CHECK_MODE=report-only \
+    INPUT_WORKING_DIRECTORY="$scratch/parent-$tag/app" $chk scan
+  expect "$tag: report-only with a parent POM above the root" 0 $?
+  has "$(output_of "$tag-report-parent" proposed-diff)" 'gson .*2.13.2 -> 2.13.1' && ok "$tag: proposed diff from the parent change" || bad "$tag: proposed diff from the parent change"
+  cmp -s "$scratch/parent-$tag/app/raeva.lock" "$parent/app/raeva.lock" && ok "$tag: parent case keeps the committed lock" || bad "$tag: parent case keeps the committed lock"
 
   # Vulnerability scan with findings, gated at high.
   # shellcheck disable=SC2086
@@ -490,7 +553,7 @@ between() { # <log> <fixed text>: the text sits between stop-commands and its ma
 }
 
 # A bot's pull request with a stale lock: the check fails as before, and the
-# summary also shows the lock raeva sync would write, made in a copy.
+# summary also shows the lock raeva sync would write.
 for i in "${!check_variants[@]}"; do
   chk=${check_variants[$i]}
   tag=$([[ $i -eq 0 ]] && echo bash || echo pwsh)
@@ -523,7 +586,7 @@ for i in "${!check_variants[@]}"; do
   cmp -s "$prdir/raeva.lock" "$scratch/pr-before.lock" && ok "$tag: the committed lock is untouched" || bad "$tag: the committed lock is untouched"
   pdir=$(output_of "$tag-proposed" proposed-dir)
   [[ $(wc -l < "$pdir/proposed.diff" 2>/dev/null) -eq 50000 ]] && ok "$tag: full proposed diff in the artifact directory" || bad "$tag: full proposed diff in the artifact directory"
-  [[ -n "$pdir" && ! -e "$(dirname "$pdir")/proposed" ]] && ok "$tag: the copy is removed" || bad "$tag: the copy is removed"
+  [[ -n "$pdir" && ! -e "$(dirname "$pdir")/committed.lock" ]] && ok "$tag: the committed lock is put back" || bad "$tag: the committed lock is put back"
   [[ "$(tr '\n' '|' < "$scratch/proposed-args-$tag")" == *"|sync|--settings=ci.xml|--activate-profiles=ci|--define=who=O'Brien|--platforms|linux-x86_64|"* ]] \
     && ok "$tag: the proposed lock keeps the recorded platforms and options" || bad "$tag: the proposed lock keeps the recorded platforms and options"
   between "$plog" "::error title=evil::from raeva sync" && ok "$tag: raeva sync output cannot run workflow commands" || bad "$tag: raeva sync output cannot run workflow commands"

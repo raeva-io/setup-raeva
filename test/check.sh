@@ -136,6 +136,76 @@ run() {
     CHECK_SCRIPT="$here/scripts/check.ps1" "$@" > "$t/log" 2>&1
 }
 
+# action.yml reads each output from the Bash step or the PowerShell step of
+# the same job, so both must exist and the scripts must write the output.
+# Lock diffs and relock are Linux and macOS only.
+cat > "$t/steps.py" <<'PY'
+import re, sys, yaml
+from pathlib import Path
+root = Path(sys.argv[1])
+action = yaml.safe_load((root / 'action.yml').read_text())
+steps = action['runs']['steps']
+ids = {s['id'] for s in steps if 'id' in s}
+pairs = {'unix': 'windows', 'scan-unix': 'scan-windows'}
+pairs.update({w: u for u, w in pairs.items()})
+scripts = {'unix': 'install.sh', 'windows': 'install.ps1', 'relock': 'check.sh',
+           'scan-unix': 'check.sh', 'scan-windows': 'check.ps1'}
+unix_only = {'lock-diff-dir', 'lock-diff-artifact'}
+ref = re.compile(r'steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)')
+errors = []
+def strings(node):
+    if isinstance(node, dict):
+        for v in node.values():
+            yield from strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from strings(v)
+    elif isinstance(node, str):
+        yield node
+windows = {'windows', 'scan-windows'}
+def check(text, side):
+    for step, name in ref.findall(text):
+        if step not in ids:
+            errors.append(f'unknown step {step}')
+            continue
+        if step in scripts:
+            src = (root / 'scripts' / scripts[step]).read_text()
+            n = re.escape(name)
+            if not re.search(rf"\bout {n}\b|Out '{n}'|[\"']{n}<<", src):
+                errors.append(f'{scripts[step]} never writes {name}')
+        other = pairs.get(step)
+        if other and side and (side == 'windows') != (step in windows):
+            errors.append(f'a {side} step reads steps.{step}.outputs.{name}')
+        if other and not side and name not in unix_only and f'steps.{other}.outputs.{name}' not in text:
+            errors.append(f'steps.{step}.outputs.{name} without steps.{other}.outputs.{name}')
+for text in strings(action.get('outputs', {})):
+    check(text, None)
+for s in steps:
+    cond = str(s.get('if', ''))
+    side = 'windows' if "runner.os == 'Windows'" in cond else 'unix' if (
+        "runner.os != 'Windows'" in cond or 'RUNNER_OS' in str(s.get('run', ''))) else None
+    for text in strings(s):
+        check(text, side)
+print('\n'.join(errors))
+sys.exit(1 if errors else 0)
+PY
+python3 -I "$t/steps.py" "$here" > "$t/log" 2>&1 && ok "action outputs read both runner paths" || bad "action outputs read both runner paths"
+mkdir -p "$t/broken"
+cp -r "$here/scripts" "$t/broken/"
+sed 's/ || steps\.scan-windows\.outputs\.sarif-file//' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Unix-only output is caught" || ok "a Unix-only output is caught"
+sed '/sarif_file:/s/ || steps\.scan-windows\.outputs\.sarif-file//' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Unix-only input of one step is caught" || ok "a Unix-only input of one step is caught"
+sed 's/steps\.scan-windows\.outputs\.vuln-exit-code/steps.scan-unix.outputs.vuln-exit-code/' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Windows step reading the Bash step is caught" || ok "a Windows step reading the Bash step is caught"
+sed 's/steps\.windows\.outputs\.version/steps.install-win.outputs.version/' "$here/action.yml" > "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an unknown step id is caught" || ok "an unknown step id is caught"
+# shellcheck disable=SC2016
+sed -i 's/Out .vuln-findings. \$count/Out "x" $count/' "$t/broken/scripts/check.ps1"
+cp "$here/action.yml" "$t/broken/action.yml"
+python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an output no script writes is caught" || ok "an output no script writes is caught"
+rm -rf "${t:?}/broken"
+
 variants=(bash)
 [[ -z "${PWSH:-}" ]] || variants+=(pwsh)
 for tag in "${variants[@]}"; do

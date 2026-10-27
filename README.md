@@ -423,7 +423,8 @@ composite action:
   with a three-platform lock), and `VULN_PROJECT`; `PWSH`, `GH_TOKEN`, and
   `RELEASE_VERSION` enable more tests.
 - `test/check.sh` tests report-only checks and PR baselines with fixed CLI
-  and API replies. `PWSH` enables the same cases in PowerShell.
+  and API replies. `PWSH` enables the same cases in PowerShell. It also
+  checks that each action output reads both the Bash and the PowerShell step.
 - `test/install.sh` tests glibc and musl selection with local release archives.
 - `test/relock.sh` runs the `run:` blocks of `examples/relock.yml` against a
   local bare repository with two Maven roots, including tampered artifacts

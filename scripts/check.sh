@@ -507,12 +507,19 @@ pr_diff() {
     return 0
   fi
   local encoded old="$run/display-base.lock" status
-  encoded=$(jq -rn --arg p "$path" '$p | split("/") | map(@uri) | join("/")')
-  # The header comes on stdin so the token is not in curl's arguments.
-  status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 \
-    -H @- -H 'Accept: application/vnd.github.raw+json' \
-    -o "$old" -w '%{http_code}' \
-    "$api/repos/$GITHUB_REPOSITORY/contents/$encoded?ref=$base") || status=000
+  # The vulnerability baseline already read the same file of the same commit.
+  if [[ -n "$base_lock" ]]; then
+    old="$base_lock" status=200
+  elif [[ "$base_missing" == true ]]; then
+    status=404
+  else
+    encoded=$(jq -rn --arg p "$path" '$p | split("/") | map(@uri) | join("/")')
+    # The header comes on stdin so the token is not in curl's arguments.
+    status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 \
+      -H @- -H 'Accept: application/vnd.github.raw+json' \
+      -o "$old" -w '%{http_code}' \
+      "$api/repos/$GITHUB_REPOSITORY/contents/$encoded?ref=$base") || status=000
+  fi
   case "$status" in
     200)
       if cmp -s "$old" "$path"; then

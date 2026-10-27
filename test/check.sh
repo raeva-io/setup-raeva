@@ -93,8 +93,6 @@ elif '/git/blobs/' in url:
         status = 404
 elif '/contents/' in url:
     body = 'display diff response, never a vulnerability baseline\n'
-    if case == 'display500':
-        status = 500
 else:
     sys.exit('unexpected request')
 Path(os.environ['TEST_DIR'], 'requests').open('a').write(url + '\n')
@@ -206,15 +204,21 @@ LOCK
   fi
   cp "$t/saved.lock" "$t/project/raeva.lock"
 
-  for response in display display500; do
+  for case in normal missing; do
     run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_VULN=true \
-      INPUT_WORKING_DIRECTORY=. API_CASE="$response" BASELINE_MARKS=1 \
+      INPUT_WORKING_DIRECTORY=. API_CASE="$case" BASELINE_MARKS=1 \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
-    expect "$tag: display diff $response leaves the baseline intact" 0 $?
-    [[ "$(output vuln-exit-code)" == 0 ]] && ok "$tag: scan uses validated baseline after $response" || bad "$tag: overwritten baseline"
-    has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
-      && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
+    expect "$tag: lock diff and baseline with base $case" 0 $?
+    ! has "$t/requests" /contents/ && ok "$tag: lock diff reuses the baseline read ($case)" || bad "$tag: lock diff read the base lock again ($case)"
   done
+  [[ "$tag" != bash ]] || has "$t/summary" 'This pull request adds' && ok "$tag: lock diff of a base without a lock" || bad "$tag: lock diff of a base without a lock"
+  run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_VULN=true \
+    INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+  [[ "$(output vuln-exit-code)" == 0 ]] && ok "$tag: scan uses validated baseline" || bad "$tag: baseline scan"
+  [[ "$tag" != bash ]] || has "$t/summary" '### raeva.lock' && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
+  has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
+    && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
 
   for root in . module; do
     api_case=normal

@@ -441,11 +441,15 @@ function Get-BaseJson([string]$Path) {
     if ([int]$response.StatusCode -ne 200) { throw "HTTP $($response.StatusCode) (the job needs contents: read)" }
     $response.Content | ConvertFrom-Json
 }
+# A merge queue checks the group against its base commit, as a pull
+# request is checked against its base branch.
 function Read-PrBaseline {
-    if (-not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request'))) { return }
+    $mergeGroup = "$env:GITHUB_EVENT_NAME" -ceq 'merge_group'
+    if (-not $mergeGroup -and -not ("$env:GITHUB_EVENT_NAME".StartsWith('pull_request'))) { return }
     try {
-        if (-not $env:GITHUB_EVENT_PATH -or -not $env:GITHUB_REPOSITORY) { throw 'pull request metadata is missing' }
-        $base = (Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json).pull_request.base.sha
+        if (-not $env:GITHUB_EVENT_PATH -or -not $env:GITHUB_REPOSITORY) { throw 'event metadata is missing' }
+        $payload = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+        $base = if ($mergeGroup) { $payload.merge_group.base_sha } else { $payload.pull_request.base.sha }
         if ($base -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'base SHA is invalid' }
         $path = ($workdir -replace '\\', '/').TrimEnd('/') + '/raeva.lock'
         if ($path.StartsWith('./')) { $path = $path.Substring(2) }

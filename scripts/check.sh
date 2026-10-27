@@ -446,12 +446,19 @@ base_json() {
     "$api/repos/$GITHUB_REPOSITORY/$1") || baseline_error "request failed"
   [[ "$status" == 200 ]] || baseline_error "HTTP $status (the job needs contents: read)"
 }
+# A merge queue checks the group against its base commit, as a pull
+# request is checked against its base branch.
 pr_baseline() {
-  [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]] || return 0
+  local field
+  case "${GITHUB_EVENT_NAME:-}" in
+    pull_request*) field=.pull_request.base.sha ;;
+    merge_group) field=.merge_group.base_sha ;;
+    *) return 0 ;;
+  esac
   command -v jq >/dev/null || baseline_error "jq is required"
-  [[ -f "${GITHUB_EVENT_PATH:-}" && -n "${GITHUB_REPOSITORY:-}" ]] || baseline_error "pull request metadata is missing"
+  [[ -f "${GITHUB_EVENT_PATH:-}" && -n "${GITHUB_REPOSITORY:-}" ]] || baseline_error "event metadata is missing"
   local base tree path="${workdir%/}/raeva.lock" part entry kind sha mode
-  base=$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH") || baseline_error "base SHA is missing"
+  base=$(jq -er "$field" "$GITHUB_EVENT_PATH") || baseline_error "base SHA is missing"
   [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || baseline_error "base SHA is invalid"
   path="${path#./}"
   [[ "$path" != /* && "/$path/" != */../* && "/$path/" != */./* && "$path" != *//* && "$path" != *\\* ]] || baseline_error "working-directory must be a path inside the repository without . or .."

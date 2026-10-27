@@ -86,7 +86,8 @@ inputs:
   vuln:
     description: >-
       Run `raeva vuln --format sarif` after the frozen check. Pull requests
-      compare against the base commit's lock and fail only on new findings.
+      and merge queue groups compare against the base commit's lock and fail
+      only on new findings.
       If the base has no lock, findings are report-only; scan errors fail.
     default: "false"
   vuln-fail-on:

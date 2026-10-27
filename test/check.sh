@@ -19,6 +19,8 @@ printf 'schema_version = 7\n[[platforms]]\ntargets = ["linux-x86_64"]\n' > "$t/p
 cp "$t/project/raeva.lock" "$t/original.lock"
 printf '<project/>\n' > "$t/project/pom.xml"
 printf '{"pull_request":{"base":{"sha":"%040d"},"user":{"type":"User"}}}\n' 1 > "$t/event.json"
+printf '{"merge_group":{"base_sha":"%040d","head_sha":"%040d"}}\n' 1 5 > "$t/merge-group.json"
+printf '{"merge_group":{"base_sha":"not-a-sha"}}\n' > "$t/merge-group-invalid.json"
 
 cat > "$t/bin/raeva" <<'SH'
 #!/usr/bin/env bash
@@ -92,8 +94,6 @@ elif '/git/blobs/' in url:
         status = 404
 elif '/contents/' in url:
     body = 'display diff response, never a vulnerability baseline\n'
-    if case == 'display500':
-        status = 500
 else:
     sys.exit('unexpected request')
 Path(os.environ['TEST_DIR'], 'requests').open('a').write(url + '\n')
@@ -283,15 +283,21 @@ LOCK
   fi
   cp "$t/saved.lock" "$t/project/raeva.lock"
 
-  for response in display display500; do
+  for case in normal missing; do
     run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_VULN=true \
-      INPUT_WORKING_DIRECTORY=. API_CASE="$response" BASELINE_MARKS=1 \
+      INPUT_WORKING_DIRECTORY=. API_CASE="$case" BASELINE_MARKS=1 \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
-    expect "$tag: display diff $response leaves the baseline intact" 0 $?
-    [[ "$(output vuln-exit-code)" == 0 ]] && ok "$tag: scan uses validated baseline after $response" || bad "$tag: overwritten baseline"
-    has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
-      && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
+    expect "$tag: lock diff and baseline with base $case" 0 $?
+    ! has "$t/requests" /contents/ && ok "$tag: lock diff reuses the baseline read ($case)" || bad "$tag: lock diff read the base lock again ($case)"
   done
+  [[ "$tag" != bash ]] || has "$t/summary" 'This pull request adds' && ok "$tag: lock diff of a base without a lock" || bad "$tag: lock diff of a base without a lock"
+  run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_VULN=true \
+    INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+  [[ "$(output vuln-exit-code)" == 0 ]] && ok "$tag: scan uses validated baseline" || bad "$tag: baseline scan"
+  [[ "$tag" != bash ]] || has "$t/summary" '### raeva.lock' && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
+  has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
+    && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
 
   for root in . module; do
     api_case=normal
@@ -303,6 +309,19 @@ LOCK
     has "$t/args" --baseline && has "$t/args" high && ! has "$t/args" never \
       && ok "$tag: $root baseline and threshold reach CLI" || bad "$tag: $root baseline arguments"
   done
+  run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. \
+    GITHUB_EVENT_NAME=merge_group GITHUB_EVENT_PATH="$t/merge-group.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+  expect "$tag: reads the merge group baseline" 0 $?
+  has "$t/args" --baseline && has "$t/requests" "git/commits/$(printf '%040d' 1)" \
+    && ok "$tag: merge group compares with its base commit" || bad "$tag: merge group baseline"
+  run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE=missing \
+    GITHUB_EVENT_NAME=merge_group GITHUB_EVENT_PATH="$t/merge-group.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+  has "$t/args" never && ! has "$t/args" --baseline \
+    && ok "$tag: merge group base without a lock reports only" || bad "$tag: merge group absent lock"
+  run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. \
+    GITHUB_EVENT_NAME=merge_group GITHUB_EVENT_PATH="$t/merge-group-invalid.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+  expect "$tag: invalid merge group base SHA fails" 2 $?
+  [[ ! -s "$t/args" && ! -s "$t/requests" ]] && ok "$tag: invalid merge group base is never fetched or scanned" || bad "$tag: invalid merge group base"
   run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE=missing SCAN_CODE=4 \
     GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
   expect "$tag: missing baseline permits scan upload" 0 $?

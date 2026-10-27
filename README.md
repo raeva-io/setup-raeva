@@ -167,7 +167,8 @@ The relock workflow never pushes to main or uses `pull_request_target`.
 ## Vulnerabilities on pull requests
 
 With `vuln: true`, a pull request scan reads `raeva.lock` from the PR base
-commit and passes it as `raeva vuln --baseline <lockfile>`. Only new findings
+commit and passes it as `raeva vuln --baseline <lockfile>`; a `merge_group`
+run reads it from the merge group's base commit. Only new findings
 at `vuln-fail-on` or above fail the job. Existing findings stay in the SARIF
 log and job summary. The summary labels each compared result `new` or
 `existing`, including results suppressed by VEX. Pushes and scheduled runs
@@ -289,8 +290,8 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    summary names it. Linux and macOS.
 8. With `vuln: true`, runs `raeva vuln --format sarif`, writes a findings
    table to the job summary, uploads the log to code scanning, and then fails
-   the job if a finding meets `vuln-fail-on`. Pull requests gate only new
-   findings against the base lock, as described above. An incomplete scan uploads the
+   the job if a finding meets `vuln-fail-on`. Pull requests and merge queue
+   groups gate only new findings against the base lock, as described above. An incomplete scan uploads the
    findings it has and fails the job. Before the upload, the action asks code
    scanning with the job token; when it answers that code scanning is not
    enabled, as in a private repository without GitHub Code Security, the

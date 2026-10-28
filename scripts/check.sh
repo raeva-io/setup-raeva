@@ -69,15 +69,8 @@ fenced() {
   printf '\n%stext\n%s\n%s\n' "$fence" "$s" "$fence" >> "$summary"
 }
 
-# Prints one field of a single-line JSON envelope. jq is on every GitHub
-# hosted runner; the sed fallback reads only the plain `code` field.
-json_field() {
-  if command -v jq >/dev/null; then
-    jq -r --arg f "$1" '.[$f] // empty' "$2" 2>/dev/null || true
-  elif [[ "$1" == code ]]; then
-    sed -n '/"code":"[A-Z_]*"/{s/.*"code":"\([A-Z_]*\)".*/\1/p;q;}' "$2"
-  fi
-}
+# Prints one field of a JSON envelope.
+json_field() { jq -r --arg f "$1" '.[$f] // empty' "$2" 2>/dev/null || true; }
 
 # Used only when raeva gives no hints of its own.
 hint_for() {
@@ -123,7 +116,6 @@ sync_command() {
 # HTTP_REPO_BLOCKED names an http: repository that some POM declares and is
 # listed in the summary only.
 warnings() {
-  command -v jq >/dev/null || return 0
   local lines
   lines=$(jq -r --arg cmd "$2" '
     [.data.warnings[]?] | group_by(.code)[]
@@ -232,7 +224,6 @@ restore_lock() { [[ -z "$committed" ]] || mv -f "$committed" "$workdir/raeva.loc
 proposed() {
   if [[ "$check_mode" != report-only ]]; then
     [[ "${GITHUB_EVENT_NAME:-}" == pull_request* && -f "${GITHUB_EVENT_PATH:-}" ]] || return 0
-    command -v jq >/dev/null || return 0
     [[ "$(jq -r '.pull_request.user.type // empty' "$GITHUB_EVENT_PATH")" == Bot ]] || return 0
   fi
   [[ -f "$workdir/raeva.lock" ]] || return 0
@@ -272,8 +263,8 @@ frozen() {
   raw cat "$run/frozen.err"
   out frozen-exit-code "$code"
   if [[ $code -eq 0 ]]; then
-    local resolved=""
-    command -v jq >/dev/null && resolved=$(jq -r '.data.resolved // empty' "$json")
+    local resolved
+    resolved=$(jq -r '.data.resolved // empty' "$json" 2>/dev/null || true)
     echo "raeva.lock is current${resolved:+ ($resolved dependencies)}"
     printf '### raeva\n\n`raeva.lock` is current.\n' >> "$summary"
     warnings "$json" "sync --frozen"
@@ -283,7 +274,7 @@ frozen() {
   ecode=$(json_field code "$json")
   err=$(json_field error "$json")
   [[ -n "$err" ]] || err=$(cat "$json")
-  command -v jq >/dev/null && hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
+  hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
   [[ -n "$hints" ]] || hints=$(hint_for "$ecode")
   local lock_path="$workdir/raeva.lock"
   lock_path="${lock_path#./}"
@@ -327,7 +318,7 @@ sarif_upload() {
     -H @- -H 'Accept: application/vnd.github+json' -o "$body" -w '%{http_code}' \
     "$api/repos/$GITHUB_REPOSITORY/code-scanning/alerts?per_page=1") || status=000
   if [[ "$status" == 403 ]]; then
-    command -v jq >/dev/null && why=$(jq -r '.message // empty' "$body" 2>/dev/null | cut -c1-200 || true)
+    why=$(jq -r '.message // empty' "$body" 2>/dev/null | cut -c1-200 || true)
     if printf '%s' "$why" | grep -qiE 'must be enabled|not enabled'; then
       echo "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(esc_msg "$why")). A private repository needs GitHub Code Security. The findings are in the job summary; sarif-upload: false skips this check."
       return 0
@@ -339,7 +330,6 @@ sarif_upload() {
 # The findings as a Markdown table, most severe first. The cells quote
 # advisory data, so Markdown characters in them are escaped.
 findings_table() {
-  command -v jq >/dev/null || return 0
   jq -r '
     def cell: tostring | gsub("[\r\n]+"; " ") | gsub("(?<c>[\\\\`*_\\[\\]<>|!#~&])"; "\\\(.c)");
     def rank: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4}[.] // 5;
@@ -392,7 +382,7 @@ vuln() {
   fi
   # raeva writes result locations relative to the project root. Code scanning
   # reads them relative to the repository root, so prefix the subdirectory.
-  if [[ "$workdir" != "." ]] && command -v jq >/dev/null; then
+  if [[ "$workdir" != "." ]]; then
     local prefix="${workdir%/}/" fixed="$sarif.tmp"
     prefix="${prefix#./}"
     jq --arg p "$prefix" \
@@ -400,12 +390,10 @@ vuln() {
       "$sarif" > "$fixed" && mv "$fixed" "$sarif"
   fi
   # A result a VEX statement suppressed is not a finding.
-  local count="" suppressed="" note=""
-  if command -v jq >/dev/null; then
-    count=$(jq '[.runs[].results[]? | select((.suppressions // []) | length == 0)] | length' "$sarif")
-    suppressed=$(jq '[.runs[].results[]? | select((.suppressions // []) | length > 0)] | length' "$sarif")
-  fi
-  [[ "${suppressed:-0}" == 0 ]] || note=", and $suppressed suppressed by VEX"
+  local count suppressed note=""
+  count=$(jq '[.runs[].results[]? | select((.suppressions // []) | length == 0)] | length' "$sarif")
+  suppressed=$(jq '[.runs[].results[]? | select((.suppressions // []) | length > 0)] | length' "$sarif")
+  [[ "$suppressed" == 0 ]] || note=", and $suppressed suppressed by VEX"
   out sarif-file "$sarif"
   out sarif-category "$(sarif_category)"
   out vuln-findings "$count"
@@ -413,9 +401,9 @@ vuln() {
   [[ -z "$base_lock" ]] || gating="new findings at $fail_on or above fail the job"
   [[ "$fail_on" != never ]] || gating="findings do not fail the job (vuln-fail-on: never)"
   if [[ $code -gt 1 ]]; then
-    printf '\n`raeva vuln` did not complete (exit %s): %s finding(s)%s in the partial SARIF log.\n' "$code" "${count:-?}" "$note" >> "$summary"
+    printf '\n`raeva vuln` did not complete (exit %s): %s finding(s)%s in the partial SARIF log.\n' "$code" "$count" "$note" >> "$summary"
   else
-    printf '\n`raeva vuln`: %s finding(s)%s; %s.\n' "${count:-?}" "$note" "$gating" >> "$summary"
+    printf '\n`raeva vuln`: %s finding(s)%s; %s.\n' "$count" "$note" "$gating" >> "$summary"
   fi
   findings_table "$sarif"
   sarif_upload
@@ -458,7 +446,6 @@ pr_baseline() {
     merge_group) field=.merge_group.base_sha ;;
     *) return 0 ;;
   esac
-  command -v jq >/dev/null || baseline_error "jq is required"
   [[ -f "${GITHUB_EVENT_PATH:-}" && -n "${GITHUB_REPOSITORY:-}" ]] || baseline_error "event metadata is missing"
   local base tree path="${workdir%/}/raeva.lock" part entry kind sha mode
   base=$(jq -er "$field" "$GITHUB_EVENT_PATH") || baseline_error "base SHA is missing"
@@ -499,7 +486,6 @@ pr_baseline() {
 # through the contents API so a shallow checkout without credentials works.
 pr_diff() {
   [[ "${GITHUB_EVENT_NAME:-}" == pull_request* && -f "${GITHUB_EVENT_PATH:-}" ]] || return 0
-  command -v jq >/dev/null || return 0
   local base path="$workdir/raeva.lock"
   base=$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")
   [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ && -f "$path" ]] || return 0
@@ -563,6 +549,7 @@ relock() {
 case "$mode" in
   relock) relock ;;
   scan)
+    command -v jq >/dev/null || { echo "::error title=setup-raeva::the check needs jq on the runner"; exit 2; }
     case "$check_mode" in
       blocking|report-only) ;;
       *) echo "::error title=setup-raeva::check-mode must be blocking or report-only"; exit 2 ;;

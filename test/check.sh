@@ -204,6 +204,18 @@ cp "$here/action.yml" "$t/broken/action.yml"
 python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an output no script writes is caught" || ok "an output no script writes is caught"
 rm -rf "${t:?}/broken"
 
+# Every tool on PATH but jq.
+mkdir -p "$t/nojq"
+IFS=: read -ra dirs <<< "$PATH"
+for d in "${dirs[@]}"; do
+  for f in "$d"/*; do
+    [[ -x "$f" && "${f##*/}" != jq && ! -e "$t/nojq/${f##*/}" ]] && ln -s "$f" "$t/nojq/"
+  done
+done
+run env PATH="$t/bin:$t/nojq" INPUT_CHECK=true bash "$here/scripts/check.sh" scan
+expect "bash: a scan without jq fails" 2 $?
+has "$t/log" 'the check needs jq' && [[ ! -s "$t/args" ]] && ok "bash: says jq is missing and runs nothing" || bad "bash: missing jq"
+
 variants=(bash)
 [[ -z "${PWSH:-}" ]] || variants+=(pwsh)
 for tag in "${variants[@]}"; do

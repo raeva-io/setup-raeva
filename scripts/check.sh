@@ -373,7 +373,8 @@ vuln() {
   [[ -z "$committed" ]] || printf '\nThe committed lock is stale, so the scan reads the proposed lock.\n' >> "$summary"
   # An incomplete scan (exit 2 or more) still writes the findings it has, so
   # its log is uploaded; the gate step fails the job afterwards.
-  if [[ $code -gt 1 ]] && ! jq -e '.runs | type == "array"' "$sarif" >/dev/null 2>&1; then
+  if ! jq -e '.runs | type == "array"' "$sarif" >/dev/null 2>&1; then
+    if [[ $code -le 1 ]]; then echo "::error title=raeva vuln::the SARIF log is not valid"; exit 2; fi
     rm -f "$sarif"
     printf '\n`raeva vuln` did not complete (exit %s) and wrote no SARIF log.\n' "$code" >> "$summary"
     return 0
@@ -388,8 +389,8 @@ vuln() {
   fi
   # A result a VEX statement suppressed is not a finding.
   local count suppressed note=""
-  count=$(jq '[.runs[].results[]? | select((.suppressions // []) | length == 0)] | length' "$sarif")
-  suppressed=$(jq '[.runs[].results[]? | select((.suppressions // []) | length > 0)] | length' "$sarif")
+  read -r count suppressed < <(jq -r '[.runs[].results[]? | (.suppressions // []) | length > 0]
+    | "\(map(select(not)) | length) \(map(select(.)) | length)"' "$sarif")
   [[ "$suppressed" == 0 ]] || note=", and $suppressed suppressed by VEX"
   out sarif-file "$sarif"
   out sarif-category "$(sarif_category)"

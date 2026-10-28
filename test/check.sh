@@ -55,7 +55,9 @@ case "$1" in
       fi
       shift
     done
-    if [[ -n "${BASELINE_MARKS:-}" ]]; then
+    if [[ -n "${SARIF_TEXT+set}" ]]; then
+      printf '%s' "$SARIF_TEXT"
+    elif [[ -n "${BASELINE_MARKS:-}" ]]; then
       printf '%s\n' '{"runs":[{"results":[{"ruleId":"CVE-new","baselineState":"new","properties":{"severity":"High"}},{"ruleId":"CVE-existing","baselineState":"unchanged","properties":{"severity":"Critical"}},{"ruleId":"CVE-suppressed","baselineState":"unchanged","properties":{"severity":"High"},"suppressions":[{"kind":"external"}]}]}]}'
     else
       printf '{"runs":[{"results":[]}]}\n'
@@ -254,6 +256,24 @@ for tag in "${variants[@]}"; do
     && ok "$tag: a current lock is scanned as committed" || bad "$tag: a current lock is scanned as committed"
   run env VULN_EXIT_CODE=4 INPUT_VULN_FAIL_ON=never "${check[@]}" gate
   expect "$tag: report-only scan errors fail at the gate" 4 $?
+  # A Windows process that crashes exits with a negative NTSTATUS.
+  if run env VULN_EXIT_CODE=-1073741819 INPUT_VULN_FAIL_ON=never "${check[@]}" gate; then
+    bad "$tag: a negative scan exit code passed the gate"
+  else
+    ok "$tag: a negative scan exit code fails at the gate"
+  fi
+  for text in '' '{}' 'not json'; do
+    for code in 0 1; do
+      run env INPUT_VULN=true SARIF_TEXT="$text" SCAN_CODE="$code" "${check[@]}" scan
+      expect "$tag: a scan that exits $code with SARIF '$text' fails" 2 $?
+      has "$t/log" 'the SARIF log is not valid' && [[ -z "$(output sarif-file)" ]] \
+        && ok "$tag: no SARIF upload after exit $code with '$text'" || bad "$tag: invalid SARIF after exit $code"
+    done
+  done
+  run env INPUT_VULN=true SARIF_TEXT='' SCAN_CODE=4 "${check[@]}" scan
+  expect "$tag: an incomplete scan without a SARIF log reaches the gate" 0 $?
+  has "$t/summary" 'wrote no SARIF log' && [[ "$(output vuln-exit-code)" == 4 ]] \
+    && ok "$tag: the summary says the scan wrote no SARIF log" || bad "$tag: incomplete scan without a SARIF log"
 
   # The JDK suffix belongs to the lock and config, never to --platforms.
   cp "$t/original.lock" "$t/saved.lock"

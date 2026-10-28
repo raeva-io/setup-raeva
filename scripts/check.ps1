@@ -494,7 +494,7 @@ function Invoke-Gate {
         Write-Output "::error title=raeva vuln::findings at or above '$failOn'; see the job summary and the scan output"
         exit 1
     }
-    if ($code -gt 1) {
+    if ($code -notin 0, 1) {
         Write-Output "::error title=raeva vuln::the scan did not complete (exit $code); see the step log"
         exit $code
     }

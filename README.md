@@ -257,13 +257,14 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
 
 ## What the action does
 
-1. Downloads `sha256.sum` and the archive for the runner, such as
+1. Downloads the archive for the runner, such as
    `raeva-x86_64-unknown-linux-gnu.tar.gz`, from the GitHub release
    `v<version>`. For a private `repository` it downloads through `gh` with
    `token`.
-2. Checks the archive's SHA-256. For the versions in `known-checksums.txt`, the
-   SHA-256 must also match the value pinned in this action, so a release asset
-   replaced after the action release is refused.
+2. Checks the archive's SHA-256. For the versions in `known-checksums.txt` it
+   must match the value pinned in this action, so a release asset replaced
+   after the action release is refused. For other versions it must match the
+   release's `sha256.sum`.
 3. With `verify: attestation`, the default, runs `gh attestation verify` on the
    archive. The attestation must come from `raeva-io/raeva`, from
    `.github/workflows/release.yml`, at `refs/tags/v<version>`, on a
@@ -330,7 +331,7 @@ shell installer skips the check when `sha256sum` is missing.
 | `sarif-category` | empty | Code scanning category; empty means one per `working-directory`. |
 | `rv-alias` | `false` | Also install the command as `rv`. |
 | `repository` | `raeva-io/raeva` | Where releases and attestations come from. |
-| `download-base-url` | empty | A mirror that serves `sha256.sum` and the archives. |
+| `download-base-url` | empty | A mirror that serves the archives, and `sha256.sum` for versions this action does not pin. |
 
 ## Outputs
 

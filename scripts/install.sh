@@ -77,18 +77,20 @@ fetch() { # <asset name>
   gh release download "$tag" --repo "$repo" --pattern "$1" --dir "$work" --clobber
 }
 
-fetch sha256.sum || die "cannot download sha256.sum for $tag from $base_url"
-
-# sha256.sum lines look like "<hex> *<asset>".
-release_sha=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$work/sha256.sum")
-[[ "$release_sha" =~ ^[0-9a-f]{64}$ ]] || die "sha256.sum of $tag has no single entry for $asset"
-
 # A checksum shipped with this action release is independent of the GitHub
-# release, so it also catches a release asset that was replaced later.
+# release, so it also catches a release asset that was replaced later, and
+# sha256.sum is not needed.
 known_sha=$(awk -v v="$version" -v a="$asset" '$1 == v && $2 == a { print $3 }' \
   "$action_path/known-checksums.txt" 2>/dev/null || true)
-if [[ -n "$known_sha" && "$known_sha" != "$release_sha" ]]; then
-  die "sha256.sum of $tag lists $asset $release_sha, but this action pins $known_sha"
+if [[ -n "$known_sha" ]]; then
+  [[ "$known_sha" =~ ^[0-9a-f]{64}$ ]] || die "known-checksums.txt has no single valid entry for $version $asset"
+  sha="$known_sha" says="but this action pins" source="the checksum pinned in this action"
+else
+  fetch sha256.sum || die "cannot download sha256.sum for $tag from $base_url"
+  # sha256.sum lines look like "<hex> *<asset>".
+  sha=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$work/sha256.sum")
+  [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "sha256.sum of $tag has no single entry for $asset"
+  says="sha256.sum says" source="sha256.sum of release $tag"
 fi
 
 fetch "$asset" || die "cannot download $asset"
@@ -98,12 +100,8 @@ if command -v sha256sum >/dev/null; then
 else
   actual=$(shasum -a 256 "$work/$asset" | cut -d' ' -f1)
 fi
-[[ "$actual" == "$release_sha" ]] || die "$asset has SHA-256 $actual, sha256.sum says $release_sha"
-if [[ -n "$known_sha" ]]; then
-  echo "SHA-256 of $asset matches the checksum pinned in this action"
-else
-  echo "SHA-256 of $asset matches sha256.sum of release $tag"
-fi
+[[ "$actual" == "$sha" ]] || die "$asset has SHA-256 $actual, $says $sha"
+echo "SHA-256 of $asset matches $source"
 
 if [[ "$verify" == "attestation" ]]; then
   command -v gh >/dev/null || die "verify: attestation needs the GitHub CLI (gh); install it or set verify: sha256"

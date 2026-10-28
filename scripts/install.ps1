@@ -91,40 +91,41 @@ function Get-Asset([string]$Name) {
     if ($LASTEXITCODE -ne 0) { throw "gh release download failed for $Name" }
 }
 try {
-    $sumFile = Join-Path $work 'sha256.sum'
-    try { Get-Asset 'sha256.sum' } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
-
-    # sha256.sum lines look like "<hex> *<asset>".
-    $shas = @(Get-Content -LiteralPath $sumFile | ForEach-Object {
-        $f = -split $_
-        if ($f.Count -eq 2 -and $f[1].TrimStart('*') -eq $asset) { $f[0] }
-    })
-    if ($shas.Count -ne 1 -or $shas[0] -cnotmatch '^[0-9a-f]{64}$') { Fail "sha256.sum of $tag has no single entry for $asset" }
-    $releaseSha = $shas[0]
-
     # A checksum shipped with this action release is independent of the
-    # GitHub release, so it also catches a release asset replaced later.
-    $knownSha = ''
+    # GitHub release, so it also catches a release asset replaced later, and
+    # sha256.sum is not needed.
+    $known = @()
     $knownFile = Join-Path $actionPath 'known-checksums.txt'
     if (Test-Path -LiteralPath $knownFile) {
-        foreach ($line in Get-Content -LiteralPath $knownFile) {
-            $f = -split $line
-            if ($f.Count -eq 3 -and $f[0] -eq $version -and $f[1] -eq $asset) { $knownSha = $f[2] }
-        }
+        $known = @(Get-Content -LiteralPath $knownFile | ForEach-Object {
+            $f = -split $_
+            if ($f.Count -eq 3 -and $f[0] -eq $version -and $f[1] -eq $asset) { $f[2] }
+        })
     }
-    if ($knownSha -and $knownSha -ne $releaseSha) {
-        Fail "sha256.sum of $tag lists $asset $releaseSha, but this action pins $knownSha"
+    $knownSha = ''
+    if ($known.Count -gt 0) {
+        if ($known.Count -ne 1 -or $known[0] -cnotmatch '^[0-9a-f]{64}$') { Fail "known-checksums.txt has no single valid entry for $version $asset" }
+        $knownSha = $sha = $known[0]
+        $says = 'but this action pins'
+        $source = 'the checksum pinned in this action'
+    } else {
+        try { Get-Asset 'sha256.sum' } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
+        # sha256.sum lines look like "<hex> *<asset>".
+        $shas = @(Get-Content -LiteralPath (Join-Path $work 'sha256.sum') | ForEach-Object {
+            $f = -split $_
+            if ($f.Count -eq 2 -and $f[1].TrimStart('*') -eq $asset) { $f[0] }
+        })
+        if ($shas.Count -ne 1 -or $shas[0] -cnotmatch '^[0-9a-f]{64}$') { Fail "sha256.sum of $tag has no single entry for $asset" }
+        $sha = $shas[0]
+        $says = 'sha256.sum says'
+        $source = "sha256.sum of release $tag"
     }
 
     $archive = Join-Path $work $asset
     try { Get-Asset $asset } catch { Fail "cannot download ${asset}: $_" }
     $actual = Sha256 $archive
-    if ($actual -ne $releaseSha) { Fail "$asset has SHA-256 $actual, sha256.sum says $releaseSha" }
-    if ($knownSha) {
-        Write-Output "SHA-256 of $asset matches the checksum pinned in this action"
-    } else {
-        Write-Output "SHA-256 of $asset matches sha256.sum of release $tag"
-    }
+    if ($actual -ne $sha) { Fail "$asset has SHA-256 $actual, $says $sha" }
+    Write-Output "SHA-256 of $asset matches $source"
 
     if ($verify -eq 'attestation') {
         if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail 'verify: attestation needs the GitHub CLI (gh); install it or set verify: sha256' }

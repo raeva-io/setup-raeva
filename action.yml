@@ -125,8 +125,8 @@ inputs:
   download-base-url:
     description: >-
       Download from this URL instead of the GitHub release, for a mirror. It
-      must serve sha256.sum and the archives. Attestations are still checked
-      against the repository input.
+      must serve the archives, and sha256.sum for versions this action does
+      not pin. Attestations are still checked against the repository input.
     default: ""
 
 outputs:

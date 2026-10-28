@@ -256,6 +256,19 @@ for i in "${!install_variants[@]}"; do
     INPUT_DOWNLOAD_BASE_URL="file://$rel" $inst
   expect "$tag: installs a release that matches the pinned checksum" 0 $?
   has "$scratch/run-$tag-pinned/log" "pinned in this action" && ok "$tag: uses the pinned checksum" || bad "$tag: uses the pinned checksum"
+  mkdir -p "$scratch/rel-nosum-$tag"
+  cp "$rel/raeva-$target.tar.gz" "$scratch/rel-nosum-$tag/"
+  # shellcheck disable=SC2086
+  ACTION_PATH="$pinned" run_env "$tag-pinned-nosum" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 \
+    INPUT_DOWNLOAD_BASE_URL="file://$scratch/rel-nosum-$tag" $inst
+  expect "$tag: a pinned version does not download sha256.sum" 0 $?
+  echo "$version raeva-$target.tar.gz $sha" >> "$pinned/known-checksums.txt"
+  # shellcheck disable=SC2086
+  ACTION_PATH="$pinned" run_env "$tag-pin-twice" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 \
+    INPUT_DOWNLOAD_BASE_URL="file://$rel" $inst
+  expect "$tag: refuses two pins for one archive" 1 $?
+  has "$scratch/run-$tag-pin-twice/log" "no single valid entry" && ok "$tag: names the ambiguous pin" || bad "$tag: names the ambiguous pin"
+  sed -i '$d' "$pinned/known-checksums.txt"
   sed -i "s/ $sha\$/ $(printf '0%.0s' {1..64})/" "$pinned/known-checksums.txt"
   # shellcheck disable=SC2086
   ACTION_PATH="$pinned" run_env "$tag-pin-mismatch" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 \

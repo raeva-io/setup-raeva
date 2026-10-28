@@ -143,7 +143,7 @@ run_push_job() { # <workdir> <uploaded file, artifact directory, or ->...
 run_relock_job "$t/relock" . 0
 code=$?
 [[ $code -eq 0 ]] && ok "relock job succeeds" || { bad "relock job succeeds (exit $code)"; cat "$t/relock.log"; }
-grep -q '^changed=true$' "$t/relock.out" && ok "relock job reports a change" || bad "relock job reports a change"
+grep -q '^path=.*/relock\.tar$' "$t/relock.out" && ok "relock job reports a change" || bad "relock job reports a change"
 grep -q "^relocked-platforms=$platforms\$" "$t/relock.out" && ok "relock keeps every locked platform" || bad "relock keeps every locked platform"
 grep -q PLATFORM_DROPPED "$t/relock.log" && bad "no PLATFORM_DROPPED warning" || ok "no PLATFORM_DROPPED warning"
 [[ "$(tar -tf "$t/relock.temp/relock/0/relock.tar")" == raeva.lock ]] && ok "artifact holds only raeva.lock" || bad "artifact holds only raeva.lock"
@@ -167,7 +167,7 @@ git clone --quiet --branch "$branch" "$t/remote.git" "$t/after"
 head_sha=$(git -C "$t/after" rev-parse HEAD)
 run_relock_job "$t/relock-unchanged" . 0
 code=$?
-[[ $code -eq 0 ]] && grep -q '^changed=false$' "$t/relock-unchanged.out" \
+[[ $code -eq 0 ]] && grep -q '^path=.*/unchanged$' "$t/relock-unchanged.out" \
   && [[ -f "$t/relock-unchanged.temp/relock/0/unchanged" ]] \
   && ok "unchanged relock produces a marker" || bad "unchanged relock produces a marker (exit $code)"
 unchanged=$(sed -n 's/^path=//p' "$t/relock-unchanged.out")

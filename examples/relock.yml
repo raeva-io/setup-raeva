@@ -72,21 +72,18 @@ jobs:
         run: |
           out="$RUNNER_TEMP/relock/$INDEX"
           mkdir -p "$out"
-          # The root's committed lock and Trusted Checksums files, as paths
-          # from the repository root.
-          mapfile -t files < <(git ls-files -- "$ROOT/raeva.lock" \
+          # The root's committed lock and Trusted Checksums files that relock
+          # changed, as paths from the repository root.
+          mapfile -t files < <(git diff --name-only -- "$ROOT/raeva.lock" \
             "$ROOT/.mvn/checksums/checksums.sha256" "$ROOT/.mvn/checksums/checksums.sha1")
-          if [[ ${#files[@]} -eq 0 ]] || git diff --quiet -- "${files[@]}"; then
+          if [[ ${#files[@]} -eq 0 ]]; then
             touch "$out/unchanged"
             echo "path=$out/unchanged" >> "$GITHUB_OUTPUT"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git diff --stat -- "${files[@]}"
-          mapfile -t files < <(git diff --name-only -- "${files[@]}")
           tar -cf "$out/relock.tar" "${files[@]}"
           echo "path=$out/relock.tar" >> "$GITHUB_OUTPUT"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: raeva-relock-${{ strategy.job-index }}

@@ -465,8 +465,8 @@ pr_baseline() {
   [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || baseline_error "base SHA is invalid"
   path="${path#./}"
   [[ "$path" != /* && "/$path/" != */../* && "/$path/" != */./* && "$path" != *//* && "$path" != *\\* ]] || baseline_error "working-directory must be a path inside the repository without . or .."
-  base_json "git/commits/$base"
-  tree=$(jq -er '.tree.sha | select(test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' "$run/base.json") || baseline_error "invalid commit response"
+  # The trees API reads a commit SHA as the commit's root tree.
+  tree="$base"
   while [[ -n "$path" ]]; do
     part="${path%%/*}"
     base_json "git/trees/$tree"

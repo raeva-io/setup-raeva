@@ -74,11 +74,9 @@ case = os.getenv('API_CASE', '')
 status = int(case) if case.isdigit() else 200
 if case == 'transport':
     sys.exit(7)
-if '/git/commits/' in url:
-    body = {'tree': {'sha': '2' * 40}}
-elif '/git/trees/' in url:
+if '/git/trees/' in url:
     entry = {'path': 'raeva.lock', 'type': 'blob', 'mode': '100644', 'sha': '3' * 40}
-    if case == 'nested' and url.endswith('2' * 40):
+    if case == 'nested' and url.endswith('1'.zfill(40)):
         entry = {'path': 'module', 'type': 'tree', 'mode': '040000', 'sha': '4' * 40}
     if case == 'symlink':
         entry['mode'] = '120000'
@@ -312,7 +310,7 @@ LOCK
   run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. \
     GITHUB_EVENT_NAME=merge_group GITHUB_EVENT_PATH="$t/merge-group.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
   expect "$tag: reads the merge group baseline" 0 $?
-  has "$t/args" --baseline && has "$t/requests" "git/commits/$(printf '%040d' 1)" \
+  has "$t/args" --baseline && has "$t/requests" "git/trees/$(printf '%040d' 1)" \
     && ok "$tag: merge group compares with its base commit" || bad "$tag: merge group baseline"
   run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE=missing \
     GITHUB_EVENT_NAME=merge_group GITHUB_EVENT_PATH="$t/merge-group.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan

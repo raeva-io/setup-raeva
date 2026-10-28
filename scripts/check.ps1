@@ -454,7 +454,8 @@ function Read-PrBaseline {
         $path = ($workdir -replace '\\', '/').TrimEnd('/') + '/raeva.lock'
         if ($path.StartsWith('./')) { $path = $path.Substring(2) }
         if ($path.StartsWith('/') -or $path -match '(^|/)\.\.?/|//|:') { throw 'working-directory must be a path inside the repository without . or ..' }
-        $tree = (Get-BaseJson "git/commits/$base").tree.sha
+        # The trees API reads a commit SHA as the commit's root tree.
+        $tree = $base
         $parts = $path -split '/'
         for ($i = 0; $i -lt $parts.Count; $i++) {
             $part = $parts[$i]

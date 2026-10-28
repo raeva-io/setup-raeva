@@ -44,7 +44,7 @@ if ($version -eq 'latest') {
         $version = ($response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -split '/tag/v')[-1]
     } catch {
         # A private repository answers 404 without the token.
-        if (-not $env:GH_TOKEN -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail "cannot resolve the latest release of ${repo}: $_" }
+        if (-not $env:GH_TOKEN -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail "cannot resolve the latest release of $repo" }
         $tagName = & gh release view --repo $repo --json tagName --jq .tagName
         if ($LASTEXITCODE -ne 0) { Fail "cannot resolve the latest release of $repo" }
         $version = "$tagName" -replace '^v', ''
@@ -109,7 +109,7 @@ try {
         $says = 'but this action pins'
         $source = 'the checksum pinned in this action'
     } else {
-        try { Get-Asset 'sha256.sum' } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
+        try { Get-Asset 'sha256.sum' } catch { Fail "cannot download sha256.sum for $tag from $baseUrl" }
         # sha256.sum lines look like "<hex> *<asset>".
         $shas = @(Get-Content -LiteralPath (Join-Path $work 'sha256.sum') | ForEach-Object {
             $f = -split $_
@@ -122,7 +122,7 @@ try {
     }
 
     $archive = Join-Path $work $asset
-    try { Get-Asset $asset } catch { Fail "cannot download ${asset}: $_" }
+    try { Get-Asset $asset } catch { Fail "cannot download $asset" }
     $actual = Sha256 $archive
     if ($actual -ne $sha) { Fail "$asset has SHA-256 $actual, $says $sha" }
     Write-Output "SHA-256 of $asset matches $source"

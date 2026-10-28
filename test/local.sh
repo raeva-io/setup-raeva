@@ -237,6 +237,15 @@ for i in "${!install_variants[@]}"; do
   expect "$tag: refuses a tampered archive" 1 $?
   has "$scratch/run-$tag-tampered/log" "sha256.sum says" && ok "$tag: names the checksum mismatch" || bad "$tag: names the checksum mismatch"
 
+  # A failed download names the file and passes on no response text.
+  mkdir -p "$scratch/rel-noarchive-$tag"
+  cp "$rel/sha256.sum" "$scratch/rel-noarchive-$tag/"
+  # shellcheck disable=SC2086
+  run_env "$tag-noarchive" env INPUT_VERSION="$version" INPUT_VERIFY=sha256 INPUT_DOWNLOAD_BASE_URL="file://$scratch/rel-noarchive-$tag" $inst
+  expect "$tag: fails without the archive" 1 $?
+  grep -qx "::error title=setup-raeva::cannot download raeva-$target.tar.gz" "$scratch/run-$tag-noarchive/log" \
+    && ok "$tag: names only the missing download" || bad "$tag: names only the missing download"
+
   # A release with only the archive names of raeva 0.4.
   mkdir -p "$scratch/rel-old-$tag"
   cp "$rel/raeva-$target.tar.gz" "$scratch/rel-old-$tag/rv-cli-$target.tar.gz"

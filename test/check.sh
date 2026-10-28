@@ -121,8 +121,9 @@ SH
 chmod +x "$t/bin/raeva" "$t/bin/curl"
 cat > "$t/check.ps1" <<'PS'
 function Invoke-WebRequest {
-    param([switch]$UseBasicParsing, [switch]$SkipHttpErrorCheck, $MaximumRedirection, $TimeoutSec, $Uri, $Headers)
-    if (-not $TimeoutSec) { throw 'request without -TimeoutSec' }
+    param([switch]$UseBasicParsing, [switch]$SkipHttpErrorCheck, $MaximumRedirection, $ConnectionTimeoutSeconds, $OperationTimeoutSeconds, $Uri, $Headers)
+    # The connection timeout ends at the headers; a stalled body needs its own.
+    if (-not $ConnectionTimeoutSeconds -or -not $OperationTimeoutSeconds) { throw 'request without both timeouts' }
     $reply = & python3 "$env:TEST_DIR/api.py" "$Uri"
     if ($LASTEXITCODE -ne 0) { throw 'request failed' }
     $reply | ConvertFrom-Json

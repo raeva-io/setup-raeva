@@ -307,7 +307,7 @@ function Test-SarifUpload {
     $status = 0
     $why = ''
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 60 -Uri "$api/repos/$env:GITHUB_REPOSITORY/code-scanning/alerts?per_page=1" `
+        $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -Uri "$api/repos/$env:GITHUB_REPOSITORY/code-scanning/alerts?per_page=1" `
             -Headers @{ Authorization = "Bearer $uploadToken"; Accept = 'application/vnd.github+json' }
         $status = [int]$response.StatusCode
         if ($status -eq 403) { try { $why = "$(($response.Content | ConvertFrom-Json).message)" } catch { } }
@@ -432,7 +432,7 @@ function Invoke-Vuln {
 
 # Read Git objects as data, without checking out or running the base tree.
 function Get-BaseJson([string]$Path) {
-    $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 60 -MaximumRedirection 0 `
+    $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -MaximumRedirection 0 `
         -Uri "$api/repos/$env:GITHUB_REPOSITORY/$Path" `
         -Headers @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json' }
     if ([int]$response.StatusCode -ne 200) { throw "HTTP $($response.StatusCode) (the job needs contents: read)" }

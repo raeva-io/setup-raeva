@@ -31,7 +31,7 @@ function Get-File([string]$Url, [string]$Path, [int]$Retries = 3) {
     if ($Url.StartsWith('file://')) {
         Copy-Item -LiteralPath ([Uri]$Url).LocalPath -Destination $Path
     } elseif ($Url.StartsWith('https://')) {
-        Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount $Retries -RetryIntervalSec 2 -TimeoutSec 300 -UseBasicParsing
+        Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount $Retries -RetryIntervalSec 2 -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -UseBasicParsing
     } else {
         Fail "download URLs must use https, got '$Url'"
     }
@@ -40,7 +40,7 @@ function Get-File([string]$Url, [string]$Path, [int]$Retries = 3) {
 if ($version -eq 'latest') {
     if ($baseUrl) { Fail "version 'latest' needs the GitHub release host; set an exact version with download-base-url" }
     try {
-        $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -Method Head -TimeoutSec 60 -UseBasicParsing
+        $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -Method Head -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -UseBasicParsing
         $version = ($response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -split '/tag/v')[-1]
     } catch {
         # A private repository answers 404 without the token.

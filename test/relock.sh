@@ -80,7 +80,7 @@ git clone --quiet "$t/remote.git" "$t/dev"
 rsync -a --exclude .git "$PROJECT/" "$t/dev/"
 mkdir -p "$t/dev/services/api"
 rsync -a --exclude .git "$PROJECT/" "$t/dev/services/api/"
-(cd "$t/dev" && git add -A && git -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet -m init && git push --quiet origin main)
+(cd "$t/dev" && git add -A && git -c user.name=dev -c user.email=dev@example.com commit --quiet -m init && git push --quiet origin main)
 platforms=$(cd "$t/dev" && "$RAEVA_BUILD" --json lock info | jq -r '[.data.platforms[].platform] | unique | join(",")')
 echo "locked platforms: $platforms"
 
@@ -88,7 +88,7 @@ echo "locked platforms: $platforms"
 branch=dependabot/maven/com.google.code.gson-gson-2.13.1
 (cd "$t/dev" && git switch --quiet -c "$branch" &&
   sed -i '/<artifactId>gson<\/artifactId>/{n;s|<version>[^<]*</version>|<version>2.13.1</version>|}' pom.xml services/api/pom.xml &&
-  git -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet -am "Bump gson to 2.13.1" && git push --quiet origin "$branch")
+  git -c user.name=dev -c user.email=dev@example.com commit --quiet -am "Bump gson to 2.13.1" && git push --quiet origin "$branch")
 head_sha=$(git -C "$t/dev" rev-parse HEAD)
 
 # Report-only checks propose a lock without changing the checked-out files.
@@ -201,7 +201,7 @@ code=$?
   && ok "all unchanged succeeds without checkout or commit" || bad "all unchanged succeeds without checkout or commit (exit $code)"
 
 # The bot pushes again before a push job for the old head runs.
-git -C "$t/dev" -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet --allow-empty -m "Bot update"
+git -C "$t/dev" -c user.name=dev -c user.email=dev@example.com commit --quiet --allow-empty -m "Bot update"
 git -C "$t/dev" push --quiet origin "$branch"
 run_push_job "$t/push-again" "$root_tar" "$unchanged"
 code=$?
@@ -313,7 +313,7 @@ git clone --quiet "$t/remote.git" "$t/diff-checksums"
 git -C "$t/diff-checksums" checkout --quiet "$head_sha"
 mkdir -p "$t/diff-checksums/.mvn/checksums" "$t/diff-checksums.temp"
 printf 'x\n' > "$t/diff-checksums/.mvn/checksums/checksums.sha256"
-(cd "$t/diff-checksums" && git add .mvn/checksums/checksums.sha256 && git -c user.name=torutofu -c user.email=285838596+torutofu@users.noreply.github.com commit --quiet -m "Add checksums")
+(cd "$t/diff-checksums" && git add .mvn/checksums/checksums.sha256 && git -c user.name=dev -c user.email=dev@example.com commit --quiet -m "Add checksums")
 cp "$t/after/raeva.lock" "$t/diff-checksums/"
 (cd "$t/diff-checksums" && env ROOT=. INDEX=0 RUNNER_TEMP="$t/diff-checksums.temp" GITHUB_OUTPUT="$t/diff-checksums.out" \
   bash -e "$t/diff.sh" > "$t/diff-checksums.log" 2>&1)

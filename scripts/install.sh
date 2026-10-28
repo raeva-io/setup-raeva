@@ -116,15 +116,11 @@ elif [[ -z "$known_sha" ]]; then
   echo "::notice title=setup-raeva::$asset was checked only against sha256.sum from the same release"
 fi
 
-mkdir -p "$work/x"
-tar -xzf "$work/$asset" -C "$work/x"
-binary="$work/x/raeva-$target/raeva"
-[[ -f "$binary" ]] || die "$asset has no raeva-$target/raeva"
-
 bin_dir="$tmp_root/raeva-$version-$target/bin"
 rm -rf "$bin_dir"
 mkdir -p "$bin_dir"
-cp "$binary" "$bin_dir/raeva"
+tar -xzf "$work/$asset" -C "$bin_dir" --strip-components=1 "raeva-$target/raeva" 2>/dev/null \
+  && [[ -f "$bin_dir/raeva" ]] || die "$asset has no raeva-$target/raeva"
 chmod 0755 "$bin_dir/raeva"
 if [[ "$rv_alias" == "true" ]]; then
   ln -s raeva "$bin_dir/rv"

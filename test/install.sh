@@ -36,5 +36,30 @@ for case in Linux/X64/glibc/x86_64-unknown-linux-gnu Linux/ARM64/glibc/aarch64-u
     fail=$((fail + 1)); echo "FAIL install $case (exit $code)"; cat "$t/log"
   fi
 done
+# macOS runners extract with bsdtar.
+if command -v bsdtar >/dev/null; then
+  mkdir -p "$t/bsdtar"
+  ln -s "$(command -v bsdtar)" "$t/bsdtar/tar"
+  env PATH="$t/bsdtar:$t/bin:$PATH" RUNNER_OS=macOS RUNNER_ARCH=X64 RUNNER_TEMP="$t/temp" \
+    INPUT_VERSION=9.9.9 INPUT_VERIFY=sha256 INPUT_DOWNLOAD_BASE_URL="file://$t/release" \
+    bash "$here/scripts/install.sh" > "$t/log" 2>&1 \
+    && [[ -x "$t/temp/raeva-9.9.9-x86_64-apple-darwin/bin/raeva" ]] \
+    && { pass=$((pass + 1)); echo "PASS install with bsdtar"; } \
+    || { fail=$((fail + 1)); echo "FAIL install with bsdtar"; cat "$t/log"; }
+fi
+# An archive without the binary at its usual path is refused.
+mkdir -p "$t/odd/raeva-9.9.9"
+cp "$t/release/raeva-x86_64-unknown-linux-gnu/raeva" "$t/odd/raeva-9.9.9/raeva"
+tar -czf "$t/odd/raeva-x86_64-unknown-linux-gnu.tar.gz" -C "$t/odd" raeva-9.9.9
+(cd "$t/odd" && sha256sum raeva-x86_64-unknown-linux-gnu.tar.gz) > "$t/odd/sha256.sum"
+env PATH="$t/bin:$PATH" RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_TEMP="$t/temp" \
+  INPUT_VERSION=9.9.9 INPUT_VERIFY=sha256 INPUT_DOWNLOAD_BASE_URL="file://$t/odd" \
+  bash "$here/scripts/install.sh" > "$t/log" 2>&1
+code=$?
+if [[ $code -eq 1 ]] && grep -q "has no raeva-x86_64-unknown-linux-gnu/raeva" "$t/log"; then
+  pass=$((pass + 1)); echo "PASS refuses an archive without the binary"
+else
+  fail=$((fail + 1)); echo "FAIL refuses an archive without the binary (exit $code)"; cat "$t/log"
+fi
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

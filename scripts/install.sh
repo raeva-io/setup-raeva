@@ -28,12 +28,12 @@ curl_get() {
   local proto="=https"
   [[ "$1" == file://* ]] && proto="=file"
   curl --proto "$proto" --tlsv1.2 --fail --silent --show-error --location \
-    --retry 3 --retry-delay 2 --connect-timeout 20 -o "$2" "$1"
+    --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 -o "$2" "$1"
 }
 
 if [[ "$version" == "latest" ]]; then
   [[ -z "$base_url" ]] || die "version 'latest' needs the GitHub release host; set an exact version with download-base-url"
-  if effective=$(curl --proto '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' \
+  if effective=$(curl --proto '=https' --tlsv1.2 -fsSL --max-time 60 -o /dev/null -w '%{url_effective}' \
     "https://github.com/$repo/releases/latest" 2>/dev/null); then
     version="${effective##*/tag/v}"
   elif [[ -n "${GH_TOKEN:-}" ]] && command -v gh >/dev/null; then

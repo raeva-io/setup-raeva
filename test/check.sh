@@ -107,11 +107,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) dest="$2"; shift ;;
     -H|-w|--proto|--retry) shift ;;
+    --max-time) timeout="$2"; shift ;;
     -*) ;;
     *) url="$1" ;;
   esac
   shift
 done
+[[ -n "${timeout:-}" ]] || { echo "request without --max-time" >&2; exit 28; }
 reply=$(python3 "$TEST_DIR/api.py" "$url")
 printf '%s' "$reply" | jq -r '.Content' > "$dest"
 printf '%s' "$reply" | jq -r '.StatusCode'
@@ -119,7 +121,8 @@ SH
 chmod +x "$t/bin/raeva" "$t/bin/curl"
 cat > "$t/check.ps1" <<'PS'
 function Invoke-WebRequest {
-    param([switch]$UseBasicParsing, [switch]$SkipHttpErrorCheck, $MaximumRedirection, $Uri, $Headers)
+    param([switch]$UseBasicParsing, [switch]$SkipHttpErrorCheck, $MaximumRedirection, $TimeoutSec, $Uri, $Headers)
+    if (-not $TimeoutSec) { throw 'request without -TimeoutSec' }
     $reply = & python3 "$env:TEST_DIR/api.py" "$Uri"
     if ($LASTEXITCODE -ne 0) { throw 'request failed' }
     $reply | ConvertFrom-Json

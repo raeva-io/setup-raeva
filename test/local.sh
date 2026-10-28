@@ -101,7 +101,7 @@ if [[ -n "${STUB_CURL_HEADERS:-}" ]]; then cat >> "$STUB_CURL_HEADERS"; else cat
 body="" url=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -o|-H|-w|--proto|--retry) [[ "$1" != -o ]] || body="$2"; shift ;;
+    -o|-H|-w|--proto|--retry|--max-time) [[ "$1" != -o ]] || body="$2"; shift ;;
     -*) ;;
     *) url="$1" ;;
   esac

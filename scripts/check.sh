@@ -312,7 +312,7 @@ sarif_category() {
 sarif_upload() {
   [[ "${INPUT_SARIF_UPLOAD:-false}" == true && -n "${GITHUB_REPOSITORY:-}" ]] || return 0
   local body="$run/code-scanning.json" status why=""
-  status=$(printf 'Authorization: Bearer %s\n' "$upload_token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 \
+  status=$(printf 'Authorization: Bearer %s\n' "$upload_token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 --max-time 60 \
     -H @- -H 'Accept: application/vnd.github+json' -o "$body" -w '%{http_code}' \
     "$api/repos/$GITHUB_REPOSITORY/code-scanning/alerts?per_page=1") || status=000
   if [[ "$status" == 403 ]]; then
@@ -430,7 +430,7 @@ baseline_error() {
 }
 base_json() {
   local status
-  status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 \
+  status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 --max-time 60 \
     -H @- -H 'Accept: application/vnd.github+json' -o "$run/base.json" -w '%{http_code}' \
     "$api/repos/$GITHUB_REPOSITORY/$1") || baseline_error "request failed"
   [[ "$status" == 200 ]] || baseline_error "HTTP $status (the job needs contents: read)"
@@ -500,7 +500,7 @@ pr_diff() {
   else
     encoded=$(jq -rn --arg p "$path" '$p | split("/") | map(@uri) | join("/")')
     # The header comes on stdin so the token is not in curl's arguments.
-    status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 \
+    status=$(printf 'Authorization: Bearer %s\n' "$token" | curl --proto '=https' --tlsv1.2 --silent --show-error --location --retry 3 --max-time 60 \
       -H @- -H 'Accept: application/vnd.github.raw+json' \
       -o "$old" -w '%{http_code}' \
       "$api/repos/$GITHUB_REPOSITORY/contents/$encoded?ref=$base") || status=000

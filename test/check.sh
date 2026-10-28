@@ -353,6 +353,14 @@ LOCK
     fi
   done
   rm -rf "${t:?}/project/module"
+  # A root outside the repository has no baseline in it.
+  for root in / //; do
+    run env -C "$t/project" INPUT_VULN=true INPUT_WORKING_DIRECTORY="$root" \
+      GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+    expect "$tag: $root has no baseline" 2 $?
+    ! has "$t/args" --baseline && { [[ "$tag" != bash ]] || has "$t/log" "must be a path inside the repository"; } \
+      && ok "$tag: $root reads no baseline" || bad "$tag: $root reads no baseline"
+  done
 
   for root in . module; do
     api_case=normal

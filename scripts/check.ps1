@@ -9,8 +9,9 @@ Set-StrictMode -Version 3.0
 $raeva = if ($env:RAEVA_BIN) { $env:RAEVA_BIN } else { 'raeva' }
 $workdir = if ($env:INPUT_WORKING_DIRECTORY) { $env:INPUT_WORKING_DIRECTORY } else { '.' }
 # The working directory as a repository path, empty for the root.
-$rel = ($workdir -replace '\\', '/').TrimEnd('/')
+$rel = $workdir -replace '\\', '/'
 if ($rel.StartsWith('./')) { $rel = $rel.Substring(2) }
+$rel = $rel -replace '(?<=.)/+$', ''
 if ($rel -eq '.') { $rel = '' }
 $lockPath = if ($rel) { "$rel/raeva.lock" } else { 'raeva.lock' }
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }

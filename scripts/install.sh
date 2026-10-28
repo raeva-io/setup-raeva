@@ -7,6 +7,9 @@ set -euo pipefail
 
 die() { echo "::error title=setup-raeva::$*"; exit 1; }
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/null}"; }
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -c1-64
+}
 
 version="${INPUT_VERSION:-}"
 verify="${INPUT_VERIFY:-attestation}"
@@ -95,11 +98,7 @@ fi
 
 fetch "$asset" || die "cannot download $asset"
 
-if command -v sha256sum >/dev/null; then
-  actual=$(sha256sum "$work/$asset" | cut -d' ' -f1)
-else
-  actual=$(shasum -a 256 "$work/$asset" | cut -d' ' -f1)
-fi
+actual=$(sha256 "$work/$asset")
 [[ "$actual" == "$sha" ]] || die "$asset has SHA-256 $actual, $says $sha"
 echo "SHA-256 of $asset matches $source"
 
@@ -151,11 +150,7 @@ else
 fi
 
 if [[ -f "$workdir/raeva.lock" ]]; then
-  if command -v sha256sum >/dev/null; then
-    lock_hash=$(sha256sum "$workdir/raeva.lock" | cut -c1-64)
-  else
-    lock_hash=$(shasum -a 256 "$workdir/raeva.lock" | cut -c1-64)
-  fi
+  lock_hash=$(sha256 "$workdir/raeva.lock")
   prefix="raeva-store-v1-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-"
   out cache-key "$prefix$lock_hash"
   out cache-restore-key "$prefix"

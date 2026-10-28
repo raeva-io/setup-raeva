@@ -4,6 +4,11 @@
 # Pull requests and merge queue groups fail only on findings new against
 # the base commit's lock.
 # Pushes to main and the weekly run fail on all findings at high or above.
+#
+# The raeva job of ci.yml can scan instead, with `vuln: true` on its
+# setup-raeva step and these permissions on the job, so one install and one
+# cache restore serve both on pushes and pull requests. Keep this workflow
+# for the weekly run.
 name: Vulnerabilities
 
 on:

@@ -277,13 +277,13 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    its end when the key missed.
 6. With `check: true`, runs `raeva sync --frozen`. A failure gives an error
    annotation on `raeva.lock` with the error code, the changes, and raeva's
-   hints. With `check-mode: report-only`, lock changes produce a warning,
-   a proposed diff, and a fix command; other errors still fail. raeva's
-   warnings become one annotation per warning code, except
-   `HTTP_REPO_BLOCKED`, which only the job summary lists. On a bot's pull
-   request with a stale lock, the summary also shows the proposed lock, and
-   the full proposed diff goes to an artifact, `raeva-lock-proposed-`
-   followed by the working directory and a hash; the summary names it.
+   hints. raeva's warnings become one annotation per warning code, except
+   `HTTP_REPO_BLOCKED`, which only the job summary lists. With
+   `check-mode: report-only`, a stale lock warns instead; other errors still
+   fail. With report-only, and on a bot's pull request, the summary shows the
+   proposed lock diff and a fix command, and the full diff goes to an
+   artifact, `raeva-lock-proposed-` followed by the working directory and a
+   hash.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
    commit's `raeva.lock` with this one, writes `raeva lock diff` to the job
    summary, and uploads the full diff as an artifact, `raeva-lock-diff-`
@@ -291,17 +291,15 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    summary names it. Linux and macOS.
 8. With `vuln: true`, runs `raeva vuln --format sarif`, writes a findings
    table to the job summary, uploads the log to code scanning, and then fails
-   the job if a finding meets `vuln-fail-on`. Pull requests and merge queue
-   groups gate only new findings against the base lock, as described above. An incomplete scan uploads the
-   findings it has and fails the job. Before the upload, the action asks code
-   scanning with the job token; when it answers that code scanning is not
-   enabled, as in a private repository without GitHub Code Security, the
-   upload is skipped with one notice.
-9. With `relock: true`, runs `raeva sync` for every platform the lock records,
-   read from schema target arrays and input records so conflicted locks can
-   be written again. JDK suffixes stay in the lock; sync reads the target JDKs
-   and `raeva.toml`. Keep `[lock] jdks` in that config for a JDK matrix. The action
-   never commits or pushes; see `examples/relock.yml`.
+   the job if a finding meets `vuln-fail-on`. On pull requests and in merge
+   queues only new findings count. An incomplete scan uploads the findings it
+   has and fails the job. When code scanning answers the job token that it
+   is not enabled, as in a private repository without GitHub Code Security,
+   the upload is skipped with one notice.
+9. With `relock: true`, runs `raeva sync` for every platform the lock
+   records, also from a conflicted lock. JDK suffixes stay in the lock; keep
+   `[lock] jdks` in `raeva.toml` for a JDK matrix. The action never commits
+   or pushes; see `examples/relock.yml`.
 
 The action has no option to skip verification, and it never runs an installer
 script. The cargo-dist PowerShell installer does not check checksums, and the

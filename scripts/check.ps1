@@ -390,7 +390,7 @@ function Invoke-Vuln {
     # its log is uploaded; the gate step fails the job afterwards.
     $log = $null
     try { $log = Get-Content -LiteralPath $sarif -Raw | ConvertFrom-Json } catch { }
-    if (-not $log -or -not $log.PSObject.Properties['runs']) {
+    if (-not $log -or -not $log.PSObject.Properties['runs'] -or $log.runs -isnot [array]) {
         if ($code -le 1) { Write-Output '::error title=raeva vuln::the SARIF log is not valid'; exit 2 }
         Remove-Item -LiteralPath $sarif -ErrorAction SilentlyContinue
         Summary "`n``raeva vuln`` did not complete (exit $code) and wrote no SARIF log."

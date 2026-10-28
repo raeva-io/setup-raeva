@@ -265,7 +265,7 @@ for tag in "${variants[@]}"; do
   else
     ok "$tag: a negative scan exit code fails at the gate"
   fi
-  for text in '' '{}' 'not json'; do
+  for text in '' '{}' 'not json' '{"runs":null}' '{"runs":{}}'; do
     for code in 0 1; do
       run env INPUT_VULN=true SARIF_TEXT="$text" SCAN_CODE="$code" "${check[@]}" scan
       expect "$tag: a scan that exits $code with SARIF '$text' fails" 2 $?

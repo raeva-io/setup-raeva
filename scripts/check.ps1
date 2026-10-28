@@ -8,6 +8,11 @@ Set-StrictMode -Version 3.0
 
 $raeva = if ($env:RAEVA_BIN) { $env:RAEVA_BIN } else { 'raeva' }
 $workdir = if ($env:INPUT_WORKING_DIRECTORY) { $env:INPUT_WORKING_DIRECTORY } else { '.' }
+# The working directory as a repository path, empty for the root.
+$rel = ($workdir -replace '\\', '/').TrimEnd('/')
+if ($rel.StartsWith('./')) { $rel = $rel.Substring(2) }
+if ($rel -eq '.') { $rel = '' }
+$lockPath = if ($rel) { "$rel/raeva.lock" } else { 'raeva.lock' }
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 # API requests use the tokens; raeva never sees them.
 $uploadToken = "$env:UPLOAD_TOKEN"
@@ -160,7 +165,7 @@ function Get-LockPlatforms([string]$Lock) {
 # writes to RUNNER_TEMP, is left out, and the summary says so.
 function Get-SyncCommand {
     $words = @('raeva')
-    if ($workdir -ne '.' -and $workdir -ne './') { $words += @('-C', $workdir) }
+    if ($rel) { $words += @('-C', $workdir) }
     $words += 'sync'
     foreach ($arg in $maven) {
         if ($arg.StartsWith('--settings=') -and [IO.Path]::IsPathRooted($arg.Substring(11))) { continue }
@@ -177,14 +182,11 @@ function Get-SyncCommand {
 # an earlier one; the hash keeps other roots, options, and for the proposed
 # lock JDKs apart, as services/api and services-api.
 function Get-DiffArtifact([string]$Prefix, [string]$More) {
-    $dir = ($workdir -replace '\\', '/').TrimEnd('/')
-    if ($dir.StartsWith('./')) { $dir = $dir.Substring(2) }
-    if ($dir -eq '.') { $dir = '' }
-    $key = $dir
+    $key = $rel
     foreach ($arg in $maven) { $key += "`n$arg" }
     $key += "`n$env:INPUT_PLATFORMS`n$More"
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))).Substring(0, 8).ToLowerInvariant()
-    if ($dir) { "$Prefix-$($dir -replace '[^A-Za-z0-9._-]', '-')-$hash" } else { "$Prefix-$hash" }
+    if ($rel) { "$Prefix-$($rel -replace '[^A-Za-z0-9._-]', '-')-$hash" } else { "$Prefix-$hash" }
 }
 
 # For report-only checks or a bot's stale lock, writes the lock diff that
@@ -272,8 +274,6 @@ function Invoke-Frozen {
     $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { Get-Content -LiteralPath $json -Raw }
     $hints = if ($envelope -and $envelope.PSObject.Properties['hints'] -and @($envelope.hints).Count -gt 0) { @($envelope.hints) -join "`n" } else { Hint $ecode }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
-    $lockPath = "$workdir/raeva.lock"
-    if ($lockPath.StartsWith('./')) { $lockPath = $lockPath.Substring(2) }
     $level = if ($checkMode -eq 'report-only' -and $code -eq 7) { 'warning' } else { 'error' }
     Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
@@ -294,9 +294,7 @@ function Invoke-Frozen {
 # the alerts of two Maven roots do not replace each other.
 function Get-SarifCategory {
     if ($env:INPUT_SARIF_CATEGORY) { return $env:INPUT_SARIF_CATEGORY }
-    $dir = ($workdir -replace '\\', '/').TrimEnd('/')
-    if ($dir.StartsWith('./')) { $dir = $dir.Substring(2) }
-    if ($dir -eq '' -or $dir -eq '.') { 'raeva' } else { "raeva/$dir" }
+    if ($rel) { "raeva/$rel" } else { 'raeva' }
 }
 
 # An upload that code scanning refuses only adds an error annotation, so ask
@@ -399,8 +397,6 @@ function Invoke-Vuln {
     }
     # raeva writes result locations relative to the project root. Code scanning
     # reads them relative to the repository root, so prefix the subdirectory.
-    $prefix = ($workdir -replace '\\', '/').TrimEnd('/')
-    if ($prefix.StartsWith('./')) { $prefix = $prefix.Substring(2) }
     # A result a VEX statement suppressed is not a finding.
     $count = 0
     $suppressed = 0
@@ -408,13 +404,13 @@ function Invoke-Vuln {
         if (-not $run.PSObject.Properties['results']) { continue }
         foreach ($result in $run.results) {
             if ($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0) { $suppressed++ } else { $count++ }
-            if ($prefix -eq '.' -or $prefix -eq '' -or -not $result.PSObject.Properties['locations']) { continue }
+            if (-not $rel -or -not $result.PSObject.Properties['locations']) { continue }
             foreach ($location in $result.locations) {
-                $location.physicalLocation.artifactLocation.uri = "$prefix/$($location.physicalLocation.artifactLocation.uri)"
+                $location.physicalLocation.artifactLocation.uri = "$rel/$($location.physicalLocation.artifactLocation.uri)"
             }
         }
     }
-    if ($prefix -ne '.' -and $prefix -ne '') {
+    if ($rel) {
         $text = $log | ConvertTo-Json -Depth 100
         [IO.File]::WriteAllText($sarif, $text, [Text.UTF8Encoding]::new($false))
     }
@@ -451,8 +447,7 @@ function Read-PrBaseline {
         $payload = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
         $base = if ($mergeGroup) { $payload.merge_group.base_sha } else { $payload.pull_request.base.sha }
         if ($base -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'base SHA is invalid' }
-        $path = ($workdir -replace '\\', '/').TrimEnd('/') + '/raeva.lock'
-        if ($path.StartsWith('./')) { $path = $path.Substring(2) }
+        $path = $lockPath
         if ($path.StartsWith('/') -or $path -match '(^|/)\.\.?/|//|:') { throw 'working-directory must be a path inside the repository without . or ..' }
         # The trees API reads a commit SHA as the commit's root tree.
         $tree = $base

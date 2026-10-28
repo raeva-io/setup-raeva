@@ -11,6 +11,11 @@ set -euo pipefail
 mode="${1:-scan}"
 raeva="${RAEVA_BIN:-raeva}"
 workdir="${INPUT_WORKING_DIRECTORY:-.}"
+# The working directory as a repository path, empty for the root.
+rel="${workdir%/}"
+rel="${rel#./}"
+[[ "$rel" != . ]] || rel=""
+lock_path="${rel:+$rel/}raeva.lock"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 tmp="${RUNNER_TEMP:-/tmp}"
 # Only the GitHub API requests use the tokens; raeva never sees them. The
@@ -94,7 +99,7 @@ hint_for() {
 # writes to RUNNER_TEMP, is left out, and the summary says so.
 sync_command() {
   local cmd=(raeva) arg
-  [[ "$workdir" == . || "$workdir" == ./ ]] || cmd+=(-C "$workdir")
+  [[ -z "$rel" ]] || cmd+=(-C "$workdir")
   cmd+=(sync)
   for arg in ${maven[@]+"${maven[@]}"}; do
     case "$arg" in
@@ -160,10 +165,7 @@ lock_platforms() {
 # an earlier one; the hash keeps other roots, options, and for the proposed
 # lock JDKs apart, as services/api and services-api.
 diff_artifact() { # <prefix> <more of the key>
-  local dir="${workdir%/}" key hash arg
-  dir="${dir#./}"
-  [[ "$dir" != . ]] || dir=""
-  key="$dir"
+  local key="$rel" hash arg
   for arg in ${maven[@]+"${maven[@]}"}; do key+=$'\n'"$arg"; done
   key+=$'\n'"${INPUT_PLATFORMS:-}"$'\n'"$2"
   if command -v sha256sum >/dev/null; then
@@ -171,10 +173,10 @@ diff_artifact() { # <prefix> <more of the key>
   else
     hash=$(printf '%s' "$key" | shasum -a 256 | cut -c1-8)
   fi
-  if [[ -z "$dir" ]]; then
+  if [[ -z "$rel" ]]; then
     printf '%s-%s' "$1" "$hash"
   else
-    printf '%s-%s-%s' "$1" "$(printf '%s' "$dir" | tr -c 'A-Za-z0-9._-' '-')" "$hash"
+    printf '%s-%s-%s' "$1" "$(printf '%s' "$rel" | tr -c 'A-Za-z0-9._-' '-')" "$hash"
   fi
 }
 
@@ -276,8 +278,6 @@ frozen() {
   [[ -n "$err" ]] || err=$(cat "$json")
   hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
   [[ -n "$hints" ]] || hints=$(hint_for "$ecode")
-  local lock_path="$workdir/raeva.lock"
-  lock_path="${lock_path#./}"
   local level=error
   [[ "$check_mode" != report-only || $code -ne 7 ]] || level=warning
   annotate "$level" "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" "$err"$'\n'"$hints"
@@ -302,9 +302,7 @@ sarif_category() {
     printf '%s' "$INPUT_SARIF_CATEGORY"
     return
   fi
-  local dir="${workdir%/}"
-  dir="${dir#./}"
-  if [[ -z "$dir" || "$dir" == . ]]; then printf 'raeva'; else printf 'raeva/%s' "$dir"; fi
+  printf 'raeva%s' "${rel:+/$rel}"
 }
 
 # An upload that code scanning refuses only adds an error annotation, so ask
@@ -382,10 +380,9 @@ vuln() {
   fi
   # raeva writes result locations relative to the project root. Code scanning
   # reads them relative to the repository root, so prefix the subdirectory.
-  if [[ "$workdir" != "." ]]; then
-    local prefix="${workdir%/}/" fixed="$sarif.tmp"
-    prefix="${prefix#./}"
-    jq --arg p "$prefix" \
+  if [[ -n "$rel" ]]; then
+    local fixed="$sarif.tmp"
+    jq --arg p "$rel/" \
       '(.runs[].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= ($p + .)' \
       "$sarif" > "$fixed" && mv "$fixed" "$sarif"
   fi
@@ -447,10 +444,9 @@ pr_baseline() {
     *) return 0 ;;
   esac
   [[ -f "${GITHUB_EVENT_PATH:-}" && -n "${GITHUB_REPOSITORY:-}" ]] || baseline_error "event metadata is missing"
-  local base tree path="${workdir%/}/raeva.lock" part entry kind sha mode
+  local base tree path="$lock_path" part entry kind sha mode
   base=$(jq -er "$field" "$GITHUB_EVENT_PATH") || baseline_error "base SHA is missing"
   [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || baseline_error "base SHA is invalid"
-  path="${path#./}"
   [[ "$path" != /* && "/$path/" != */../* && "/$path/" != */./* && "$path" != *//* && "$path" != *\\* ]] || baseline_error "working-directory must be a path inside the repository without . or .."
   # The trees API reads a commit SHA as the commit's root tree.
   tree="$base"
@@ -486,10 +482,9 @@ pr_baseline() {
 # through the contents API so a shallow checkout without credentials works.
 pr_diff() {
   [[ "${GITHUB_EVENT_NAME:-}" == pull_request* && -f "${GITHUB_EVENT_PATH:-}" ]] || return 0
-  local base path="$workdir/raeva.lock"
+  local base path="$lock_path"
   base=$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")
-  [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ && -f "$path" ]] || return 0
-  path="${path#./}"
+  [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ && -f "$workdir/raeva.lock" ]] || return 0
   while [[ "$path" == *//* ]]; do path="${path//\/\///}"; done
   if [[ "$path" == /* || "/$path/" == */../* || "/$path/" == */./* ]]; then
     echo "::notice title=setup-raeva::no lock diff for working-directory '$workdir'; use a path inside the repository without . or .."

@@ -309,6 +309,28 @@ LOCK
   has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
     && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
 
+  # ./ and a trailing slash name the same root as . and module.
+  mkdir -p "$t/project/module"
+  cp "$t/original.lock" "$t/project/module/raeva.lock"
+  for root in ./ module/; do
+    lock="${root%/}/raeva.lock"
+    lock="${lock#./}"
+    run env -C "$t/project" INPUT_CHECK=true INPUT_WORKING_DIRECTORY="$root" "${check[@]}" scan
+    has "$t/log" "::error file=$lock,title=" && ok "$tag: $root annotates $lock" || bad "$tag: $root annotation path"
+    api_case=normal
+    [[ "$root" == ./ ]] || api_case=nested
+    run env -C "$t/project" INPUT_VULN=true INPUT_WORKING_DIRECTORY="$root" API_CASE="$api_case" \
+      GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+    has "$t/args" --baseline && ok "$tag: $root reads its baseline" || bad "$tag: $root baseline"
+    if [[ "$tag" == bash ]]; then
+      run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_WORKING_DIRECTORY="$root" \
+        GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+      has "$t/requests" "/contents/$lock?" && has "$t/summary" '### raeva.lock' \
+        && ok "$tag: $root diffs $lock" || bad "$tag: $root lock diff"
+    fi
+  done
+  rm -rf "${t:?}/project/module"
+
   for root in . module; do
     api_case=normal
     [[ "$root" != module ]] || api_case=nested

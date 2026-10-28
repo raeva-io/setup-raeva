@@ -319,14 +319,15 @@ runs:
         sarif_file: ${{ steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file }}
         category: ${{ steps.scan-unix.outputs.sarif-category || steps.scan-windows.outputs.sarif-category }}
 
-    - if: inputs.vuln == 'true' && runner.os != 'Windows'
+    # A clean scan needs no gate.
+    - if: inputs.vuln == 'true' && runner.os != 'Windows' && steps.scan-unix.outputs.vuln-exit-code != '0'
       shell: bash
       run: '"$GITHUB_ACTION_PATH/scripts/check.sh" gate'
       env:
         VULN_EXIT_CODE: ${{ steps.scan-unix.outputs.vuln-exit-code }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
 
-    - if: inputs.vuln == 'true' && runner.os == 'Windows'
+    - if: inputs.vuln == 'true' && runner.os == 'Windows' && steps.scan-windows.outputs.vuln-exit-code != '0'
       shell: pwsh -NoLogo -NoProfile -NonInteractive -File {0}
       run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" gate; exit $LASTEXITCODE'
       env:

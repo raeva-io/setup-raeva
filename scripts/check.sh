@@ -295,7 +295,7 @@ frozen() {
   hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
   [[ -n "$hints" ]] || hints=$(hint_for "$ecode")
   if [[ "$ecode" == LOCKFILE_INVALID ]] && grep -qiF "schema version" <<< "$err"; then
-    hints+=$'\n''If a newer raeva wrote raeva.lock, raise the `version` input to that release.'
+    hints='If a newer raeva wrote raeva.lock, raise the `version` input to that release.'$'\n'"$hints"
   fi
   local level=error
   [[ "$check_mode" != report-only || $code -ne 7 ]] || level=warning

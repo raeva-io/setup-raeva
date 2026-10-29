@@ -319,7 +319,7 @@ for tag in "${variants[@]}"; do
     run env INPUT_CHECK=true FROZEN_CODE=3 FROZEN_JSON="{\"code\":\"LOCKFILE_INVALID\",\"error\":\"$message\",\"hints\":[\"Upgrade raeva.\"]}" "${check[@]}" scan
     expect "$tag: an invalid lock fails" 3 $?
     if [[ "$message" == *'schema version'* ]]; then
-      grep '^::error file=' "$t/log" | grep -qF 'Upgrade raeva.%0AIf a newer raeva wrote raeva.lock, raise the `version` input' \
+      grep '^::error file=' "$t/log" | grep -qF '%0AIf a newer raeva wrote raeva.lock, raise the `version` input to that release.%0AUpgrade raeva.' \
         && has "$t/summary" 'raise the `version` input' && ok "$tag: a newer schema asks for a newer version input" || bad "$tag: schema hint"
     else
       ! has "$t/log" 'raise the `version` input' && ok "$tag: other invalid locks keep raeva's hints" || bad "$tag: schema hint on a parse error"

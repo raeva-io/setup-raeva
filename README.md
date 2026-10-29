@@ -8,7 +8,22 @@ vulnerabilities.
 
 ## Quick start
 
-Keep your Maven build as it is and add a workflow that checks the lock
+First write the lock on your machine, tell git how to merge it, and commit
+both files:
+
+```sh
+raeva sync
+printf 'raeva.lock -merge linguist-generated=true\n' >> .gitattributes
+git add raeva.lock .gitattributes
+git commit -m "Add raeva.lock"
+```
+
+With `-merge`, git keeps your side of a conflicted `raeva.lock` without
+conflict markers and still reports the conflict: fix the POMs, run
+`raeva sync`, and `git add raeva.lock`. `linguist-generated` folds the lock
+in pull request diffs; the job summary has the readable diff.
+
+Then keep your Maven build as it is and add a workflow that checks the lock
 (`examples/ci.yml` has both jobs):
 
 ```yaml
@@ -45,32 +60,21 @@ jobs:
 The job runs `raeva sync --frozen`: it downloads the locked artifacts into
 the store and checks whether `raeva.lock` matches the POMs. Start with
 `check-mode: report-only`: stale or drifted locks produce a proposed diff and
-a fix command in the job summary. The `proposed-diff` output is the path of
-the full diff; `fix-command` is the command to regenerate the lock. The
-committed lock stays unchanged. With `vuln: true`, the scan reads the
-proposed lock, so a stale lock still gets scanned. Check errors, such as
-invalid locks or failed downloads, still fail the job.
+a fix command in the job summary, and a missing lock gives a warning. The
+`proposed-diff` output is the path of the full diff; `fix-command` is the
+command to regenerate the lock. The committed lock stays unchanged. With
+`vuln: true`, the scan reads the proposed lock, so a stale lock still gets
+scanned. Check errors, such as invalid locks or failed downloads, still fail
+the job.
 
-Remove `check-mode` when you want lock changes to fail the job. Its default
-is `blocking`. The check covers every platform the lock records, whatever
-the runner's OS, so one Linux job
-checks a lock written on a Mac. On a pull request, the job summary lists what
-the pull request changes in the lock. The `merge_group` trigger lets the
-check run in a merge queue. Add bot lock commits before you make a blocking
-check required (see "Bot pull requests").
-
-Locally, write the lock and tell git how to merge it:
-
-```sh
-raeva sync
-printf 'raeva.lock -merge linguist-generated=true\n' >> .gitattributes
-git add raeva.lock .gitattributes
-```
-
-With `-merge`, git keeps your side of a conflicted `raeva.lock` without
-conflict markers and still reports the conflict: fix the POMs, run
-`raeva sync`, and `git add raeva.lock`. `linguist-generated` folds the lock
-in pull request diffs; the job summary has the readable diff.
+Report-only does not fail on the lock, so it does not stop a stale lock from
+merging. Use it while you adopt raeva, then remove `check-mode` so that lock
+changes and a missing lock fail the job. Its default is `blocking`. The check covers every platform the lock records, whatever the
+runner's OS, so one Linux job checks a lock written on a Mac. On a pull
+request, the job summary lists what the pull request changes in the lock.
+The `merge_group` trigger lets the check run in a merge queue. Add bot lock
+commits before you make a blocking check required (see "Bot pull
+requests").
 
 Releases of this action are immutable, so `@v1.0.0` always names the same
 commit; `@<commit SHA> # v1.0.0` pins it by SHA. Dependabot and Renovate update
@@ -279,12 +283,11 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    annotation on `raeva.lock` with the error code, the changes, and raeva's
    hints. raeva's warnings become one annotation per warning code, except
    `HTTP_REPO_BLOCKED`, `TRANSITIVE_REPO_DROPPED`, and `WEAK_HASH_FALLBACK`,
-   which only the job summary lists. With
-   `check-mode: report-only`, a stale lock warns instead; other errors still
-   fail. With report-only, and on a bot's pull request, the summary shows the
-   proposed lock diff and a fix command, and the full diff goes to an
-   artifact, `raeva-lock-proposed-` followed by the working directory and a
-   hash.
+   which only the job summary lists. With `check-mode: report-only`, a stale
+   or missing lock warns instead; other errors still fail. With report-only,
+   and on a bot's pull request, the summary shows the proposed lock diff and
+   a fix command, and the full diff goes to an artifact,
+   `raeva-lock-proposed-` followed by the working directory and a hash.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
    commit's `raeva.lock` with this one, writes `raeva lock diff` to the job
    summary, and uploads the full diff as an artifact, `raeva-lock-diff-`
@@ -316,7 +319,7 @@ shell installer skips the check when `sha256sum` is missing.
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |
 | `working-directory` | `.` | The directory with the root `pom.xml` and `raeva.lock`. |
 | `check` | `false` | Run `raeva sync --frozen`. |
-| `check-mode` | `blocking` | With `check: true`, use `report-only` to report lock changes with a proposed diff and fix command. Other check errors still fail. |
+| `check-mode` | `blocking` | With `check: true`, use `report-only` to report lock changes with a proposed diff and fix command, and a missing lock with a warning. Other check errors still fail. |
 | `platforms` | empty | Platforms for `check` and `relock`, such as `linux-x86_64,macos-aarch64`. Empty means every platform the lock records. |
 | `settings` | empty | A Maven settings file, relative to the workspace, that `check`, `vuln` and `relock` read in place of `~/.m2/settings.xml`, passed as `-s`. |
 | `profiles` | empty | Maven profile ids, comma separated (`ci,!slow`), passed as `-P`. Only profiles that change resolution. |

@@ -297,12 +297,18 @@ frozen() {
   if [[ "$ecode" == LOCKFILE_INVALID ]] && grep -qiF "schema version" <<< "$err"; then
     hints='If a newer raeva wrote raeva.lock, raise the `version` input to that release.'$'\n'"$hints"
   fi
-  local level=error
-  [[ "$check_mode" != report-only || $code -ne 7 ]] || level=warning
+  # Report-only fails neither on lock changes nor on a missing lock, so a
+  # project can add the workflow before it commits raeva.lock.
+  local level=error soft=false
+  [[ "$check_mode" != report-only || ( $code -ne 7 && "$ecode" != LOCKFILE_MISSING ) ]] || level=warning soft=true
   annotate "$level" "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" "$err"$'\n'"$hints"
   printf '### raeva\n\n`raeva sync --frozen` failed with exit %s (%s).\n' "$code" "${ecode:-no code}" >> "$summary"
   fenced "$err"$'\n\n'"$hints"
   warnings "$json" "sync --frozen"
+  if [[ "$soft" == true && $code -ne 7 ]]; then
+    printf '\nReport-only mode: a missing lock does not fail this job.\n' >> "$summary"
+    return 0
+  fi
   if [[ $code -eq 7 ]]; then
     if [[ "$check_mode" == report-only ]]; then
       printf '\nReport-only mode: lock changes do not fail this job.\n' >> "$summary"

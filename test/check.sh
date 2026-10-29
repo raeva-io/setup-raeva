@@ -298,6 +298,18 @@ for tag in "${variants[@]}"; do
     && has "$t/log" 'Scanning raeva.lock with raeva vuln; its output follows when it exits.' \
     && ok "$tag: says what runs before the output" || bad "$tag: no line before the run"
 
+  # Report-only warns on a missing lock, so the workflow can come first.
+  missing='{"code":"LOCKFILE_MISSING","error":"lockfile not found: /w/raeva.lock"}'
+  run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
+  expect "$tag: report-only passes without a lock" 0 $?
+  grep -q '^::warning file=.*,title=raeva sync --frozen (exit 3%2C LOCKFILE_MISSING)::' "$t/log" && ! has "$t/log" '::error' \
+    && has "$t/summary" 'a missing lock does not fail this job' && ok "$tag: report-only warns on a missing lock" || bad "$tag: report-only missing lock"
+  run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_VULN=true SCAN_CODE=3 FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
+  expect "$tag: report-only without a lock still scans" 0 $?
+  [[ "$(output vuln-exit-code)" == 3 ]] && ok "$tag: a scan without a lock still fails at the gate" || bad "$tag: vuln without a lock"
+  run env INPUT_CHECK=true FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
+  expect "$tag: blocking fails without a lock" 3 $?
+
   # A crash, a kill, or a binary that cannot load writes no JSON envelope.
   crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom\n\n')
   run env INPUT_CHECK=true FROZEN_CODE=101 FROZEN_JSON='' FROZEN_STDERR="$crash" "${check[@]}" scan

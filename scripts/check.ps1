@@ -301,11 +301,18 @@ function Invoke-Frozen {
         $hints = "If a newer raeva wrote raeva.lock, raise the ``version`` input to that release.`n$hints"
     }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
-    $level = if ($checkMode -eq 'report-only' -and $code -eq 7) { 'warning' } else { 'error' }
+    # Report-only fails neither on lock changes nor on a missing lock, so a
+    # project can add the workflow before it commits raeva.lock.
+    $soft = $checkMode -eq 'report-only' -and ($code -eq 7 -or $ecode -ceq 'LOCKFILE_MISSING')
+    $level = if ($soft) { 'warning' } else { 'error' }
     Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
     Fenced "$message`n`n$hints"
     Write-Warnings $envelope 'sync --frozen'
+    if ($soft -and $code -ne 7) {
+        Summary "`nReport-only mode: a missing lock does not fail this job."
+        return
+    }
     if ($code -eq 7) {
         if ($checkMode -eq 'report-only') {
             Summary "`nReport-only mode: lock changes do not fail this job."

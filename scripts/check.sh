@@ -396,6 +396,9 @@ vuln() {
   raw cat "$errlog"
   out vuln-exit-code "$code"
   printf '\n### Vulnerabilities\n' >> "$summary"
+  if [[ "$base_missing" == true ]]; then
+    printf '\nThe base commit has no `raeva.lock` for this root. Vulnerabilities use `--fail-on never`; scan errors still fail.\n' >> "$summary"
+  fi
   [[ -z "$committed" ]] || printf '\nThe committed lock is stale, so the scan reads the proposed lock.\n' >> "$summary"
   # An incomplete scan (exit 2 or more) still writes the findings it has, so
   # its log is uploaded; the gate step fails the job afterwards.
@@ -485,7 +488,6 @@ pr_baseline() {
     if [[ "$entry" == '[]' ]]; then
       base_missing=true
       echo "::notice title=setup-raeva::The base commit has no raeva.lock for this root; vulnerability findings are report-only (--fail-on never). Scan errors still fail."
-      printf '\nThe base commit has no `raeva.lock` for this root. Vulnerabilities use `--fail-on never`; scan errors still fail.\n' >> "$summary"
       return 0
     fi
     kind=$(jq -r '.[0].type' <<< "$entry")

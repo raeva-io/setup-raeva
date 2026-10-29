@@ -419,6 +419,7 @@ function Invoke-Vuln {
     Write-Raw @($err)
     Out 'vuln-exit-code' $code
     Summary "`n### Vulnerabilities"
+    if ($baseMissing) { Summary "`nThe base commit has no ``raeva.lock`` for this root. Vulnerabilities use ``--fail-on never``; scan errors still fail." }
     if ($committed) { Summary "`nThe committed lock is stale, so the scan reads the proposed lock." }
     # An incomplete scan (exit 2 or more) still writes the findings it has, so
     # its log is uploaded; the gate step fails the job afterwards.
@@ -496,7 +497,6 @@ function Read-PrBaseline {
             if ($entries.Count -eq 0) {
                 $script:baseMissing = $true
                 Write-Host '::notice title=setup-raeva::The base commit has no raeva.lock for this root; vulnerability findings are report-only (--fail-on never). Scan errors still fail.'
-                Summary "`nThe base commit has no ``raeva.lock`` for this root. Vulnerabilities use ``--fail-on never``; scan errors still fail."
                 return
             }
             if ($entries.Count -ne 1) { throw 'duplicate tree entry' }

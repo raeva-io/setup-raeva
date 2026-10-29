@@ -461,6 +461,8 @@ LOCK
   expect "$tag: missing baseline permits scan upload" 0 $?
   has "$t/args" never && ! has "$t/args" --baseline && has "$t/summary" 'base commit has no' \
     && [[ "$(output vuln-exit-code)" == 4 ]] && ok "$tag: absent lock reports only and keeps scan errors" || bad "$tag: absent lock"
+  awk '/^### Vulnerabilities/ { heading = 1 } /base commit has no/ { exit !heading }' "$t/summary" \
+    && ok "$tag: the absent base lock is noted under the vulnerabilities heading" || bad "$tag: absent base lock note above the heading"
   for error in 403 404 500 transport malformed empty truncated symlink blob404; do
     run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE="$error" \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan

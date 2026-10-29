@@ -184,7 +184,10 @@ This also works with shallow checkouts and fork PRs. Each `working-directory`
 uses its own base lock, independently of `lock-diff`.
 
 If the base tree has no lock for that root, the action prints a notice and
-scans with `--fail-on never`. Scan errors still fail the job. A failed fetch,
+scans with `--fail-on never`. Scan errors still fail the job. So the pull
+request that adds `raeva.lock` passes by design, even with a Critical
+finding. Pushes and scheduled runs after the merge apply `vuln-fail-on` to
+every finding. A failed fetch,
 an unreadable lock, or a symlink at the lock path fails instead of skipping
 the baseline. `lock-diff: only` still skips the scan.
 

@@ -90,6 +90,8 @@ hint_for() {
       echo "Run 'raeva sync' to write raeva.lock again, then commit it." ;;
     AUTH)
       echo "Give the job the repository credentials: a settings.xml <server> that reads them with \${env.NAME}." ;;
+    "")
+      echo "raeva stopped without an error report, as after a crash, a kill, or a binary that cannot run here. The step log has its full output." ;;
     *) echo "See the error codes in docs/json-output.md of raeva." ;;
   esac
 }
@@ -276,7 +278,15 @@ frozen() {
   local err ecode hints=""
   ecode=$(json_field code "$json")
   err=$(json_field error "$json")
-  [[ -n "$err" ]] || err=$(cat "$json")
+  if [[ -z "$err" ]]; then
+    err=$(tr -d '\r' < "$run/frozen.err")
+    [[ -n "$err" ]] || err=$(tr -d '\r' < "$json")
+    if [[ -n "$err" ]]; then
+      err="raeva wrote no JSON error. The last lines it printed:"$'\n'"$(printf '%s' "$err" | tail -n 20)"
+    else
+      err="raeva wrote no JSON error and no output."
+    fi
+  fi
   hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
   [[ -n "$hints" ]] || hints=$(hint_for "$ecode")
   local level=error

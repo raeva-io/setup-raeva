@@ -104,6 +104,7 @@ function Hint([string]$Code) {
         'LOCKFILE_MISSING'  { "Run 'raeva sync' at the project root and commit raeva.lock." }
         'LOCKFILE_INVALID'  { "Run 'raeva sync' to write raeva.lock again, then commit it." }
         'AUTH'              { 'Give the job the repository credentials: a settings.xml <server> that reads them with ${env.NAME}.' }
+        ''                  { 'raeva stopped without an error report, as after a crash, a kill, or a binary that cannot run here. The step log has its full output.' }
         default             { 'See the error codes in docs/json-output.md of raeva.' }
     }
 }
@@ -273,7 +274,14 @@ function Invoke-Frozen {
         return
     }
     $ecode = if ($envelope -and $envelope.PSObject.Properties['code']) { "$($envelope.code)" } else { '' }
-    $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { Get-Content -LiteralPath $json -Raw }
+    $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { '' }
+    if (-not $message) {
+        $message = [IO.File]::ReadAllText($err).Replace("`r", '').TrimEnd("`n")
+        if (-not $message) { $message = [IO.File]::ReadAllText($json).Replace("`r", '').TrimEnd("`n") }
+        $message = if ($message) {
+            "raeva wrote no JSON error. The last lines it printed:`n" + ((@($message -split "`n") | Select-Object -Last 20) -join "`n")
+        } else { 'raeva wrote no JSON error and no output.' }
+    }
     $hints = if ($envelope -and $envelope.PSObject.Properties['hints'] -and @($envelope.hints).Count -gt 0) { @($envelope.hints) -join "`n" } else { Hint $ecode }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
     $level = if ($checkMode -eq 'report-only' -and $code -eq 7) { 'warning' } else { 'error' }

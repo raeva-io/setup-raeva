@@ -284,6 +284,21 @@ for tag in "${variants[@]}"; do
   has "$t/summary" 'wrote no SARIF log' && [[ "$(output vuln-exit-code)" == 4 ]] \
     && ok "$tag: the summary says the scan wrote no SARIF log" || bad "$tag: incomplete scan without a SARIF log"
 
+  # A crash, a kill, or a binary that cannot load writes no JSON envelope.
+  crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom\n\n')
+  run env INPUT_CHECK=true FROZEN_CODE=101 FROZEN_JSON='' FROZEN_STDERR="$crash" "${check[@]}" scan
+  expect "$tag: a crash keeps its exit code" 101 $?
+  annotation=$(grep '^::error file=' "$t/log")
+  [[ "$annotation" == *'line 6%0A'* && "$annotation" != *'line 5%0A'* && "$annotation" == *'boom'* \
+    && "$annotation" == *'%0A::error::not a command%0A'* && "$annotation" == *'step log'* \
+    && $(grep -c '^::error file=' "$t/log") == 1 ]] \
+    && ok "$tag: a crash annotates the last 20 lines of stderr" || bad "$tag: crash annotation"
+  has "$t/summary" 'line 6' && ! has "$t/summary" 'line 5' && has "$t/summary" 'boom' \
+    && ok "$tag: the summary has the end of stderr" || bad "$tag: crash summary"
+  run env INPUT_CHECK=true FROZEN_CODE=137 FROZEN_JSON='' "${check[@]}" scan
+  expect "$tag: a silent kill keeps its exit code" 137 $?
+  has "$t/log" 'no JSON error and no output' && ok "$tag: a silent kill says so" || bad "$tag: silent kill"
+
   # Warnings a maintainer cannot act on are listed in the summary only.
   warned='{"data":{"resolved":2,"warnings":[{"code":"TRANSITIVE_REPO_DROPPED","message":"dropped","context":null},{"code":"WEAK_HASH_FALLBACK","message":"sha1 only","context":null},{"code":"HTTP_REPO_BLOCKED","message":"http repo","context":null},{"code":"JAVA_VERSION_DEFAULTED","message":"java 17","context":null}]}}'
   run env INPUT_CHECK=true FROZEN_CODE=0 FROZEN_JSON="$warned" "${check[@]}" scan

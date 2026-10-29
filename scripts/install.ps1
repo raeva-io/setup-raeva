@@ -188,7 +188,7 @@ $dataDir = if ($env:RAEVA_HOME) { $env:RAEVA_HOME }
 
 $lockPath = Join-Path $workdir 'raeva.lock'
 if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
-    $prefix = "raeva-store-v1-$os-$arch-"
+    $prefix = "raeva-store-v1-$version-$os-$arch-"
     Out 'cache-key' ($prefix + (Sha256 $lockPath))
     Out 'cache-restore-key' $prefix
     if ($env:GITHUB_OUTPUT) {

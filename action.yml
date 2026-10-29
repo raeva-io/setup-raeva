@@ -26,8 +26,8 @@ inputs:
     default: ${{ github.token }}
   cache:
     description: >-
-      Restore the raeva artifact store and metadata cache, keyed by
-      raeva.lock, and save them at the end of the job on pushes to the
+      Restore the raeva artifact store and metadata cache, keyed by the
+      raeva version and raeva.lock, and save them at the end of the job on pushes to the
       default branch only. The store holds every locked jar, private ones
       included, and pull requests from forks can restore the default
       branch's cache; see the README before caching private artifacts in a

@@ -147,7 +147,7 @@ fi
 
 if [[ -f "$workdir/raeva.lock" ]]; then
   lock_hash=$(sha256 "$workdir/raeva.lock")
-  prefix="raeva-store-v1-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-"
+  prefix="raeva-store-v1-$version-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-"
   out cache-key "$prefix$lock_hash"
   out cache-restore-key "$prefix"
   {

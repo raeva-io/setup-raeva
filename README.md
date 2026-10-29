@@ -279,8 +279,8 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
 4. Installs the binary as `raeva` into a directory under `RUNNER_TEMP` and adds
    that directory to `PATH`. With `rv-alias: true` it also installs `rv`.
 5. With `cache: true`, restores the artifact store and `metadata.db` with
-   `actions/cache`, keyed by the OS, the architecture, and the SHA-256 of the
-   lock file. On a push to the default branch, a successful job saves them at
+   `actions/cache`, keyed by the raeva version, the OS, the architecture, and
+   the SHA-256 of the lock file. On a push to the default branch, a successful job saves them at
    its end when the key missed.
 6. With `check: true`, runs `raeva sync --frozen`. A failure gives an error
    annotation on `raeva.lock` with the error code, the changes, and raeva's
@@ -393,7 +393,8 @@ locked files can still be downloaded, and a restored `metadata.db` means
 parent POM or BOM that was republished upstream. A scheduled job with
 `cache: false`, such as the weekly run of `examples/vuln.yml`, does. A partial
 match from `restore-keys` brings files that the lock no longer uses, so the
-cache grows until GitHub evicts it.
+cache grows until GitHub evicts it or `version` changes: a new raeva version
+starts from an empty cache.
 
 ## Security notes
 

@@ -205,7 +205,9 @@ for i in "${!install_variants[@]}"; do
   raeva=$(output_of "$tag-install" raeva)
   [[ -x "$raeva" && "$(basename "$raeva")" == raeva ]] && ok "$tag: binary installed as raeva" || bad "$tag: binary installed as raeva"
   [[ ! -e "$(dirname "$raeva")/rv" ]] && ok "$tag: no rv alias by default" || bad "$tag: no rv alias by default"
-  [[ "$(output_of "$tag-install" cache-key)" == raeva-store-v1-Linux-X64-* ]] && ok "$tag: cache key" || bad "$tag: cache key"
+  # A raeva upgrade starts from an empty store.
+  [[ "$(output_of "$tag-install" cache-key)" == "raeva-store-v1-$version-Linux-X64-"* \
+    && "$(output_of "$tag-install" cache-restore-key)" == "raeva-store-v1-$version-Linux-X64-" ]] && ok "$tag: cache key" || bad "$tag: cache key"
   has "$scratch/run-$tag-install/output" "$RAEVA_HOME/store" && ok "$tag: cache path follows RAEVA_HOME" || bad "$tag: cache path follows RAEVA_HOME"
   has "$scratch/run-$tag-install/path" "/bin" && ok "$tag: PATH entry" || bad "$tag: PATH entry"
 

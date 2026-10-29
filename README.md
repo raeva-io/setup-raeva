@@ -278,7 +278,8 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
 6. With `check: true`, runs `raeva sync --frozen`. A failure gives an error
    annotation on `raeva.lock` with the error code, the changes, and raeva's
    hints. raeva's warnings become one annotation per warning code, except
-   `HTTP_REPO_BLOCKED`, which only the job summary lists. With
+   `HTTP_REPO_BLOCKED`, `TRANSITIVE_REPO_DROPPED`, and `WEAK_HASH_FALLBACK`,
+   which only the job summary lists. With
    `check-mode: report-only`, a stale lock warns instead; other errors still
    fail. With report-only, and on a bot's pull request, the summary shows the
    proposed lock diff and a fix command, and the full diff goes to an

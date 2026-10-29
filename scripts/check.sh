@@ -118,8 +118,9 @@ sync_command() {
 
 # One annotation per warning code, as raeva's own text summary prints them:
 # the first warning with its context, and how many more share the code.
-# HTTP_REPO_BLOCKED names an http: repository that some POM declares and is
-# listed in the summary only.
+# Only the job summary lists HTTP_REPO_BLOCKED, for an http: repository that
+# some POM declares, and the two codes raeva's text summary omits too:
+# TRANSITIVE_REPO_DROPPED and WEAK_HASH_FALLBACK.
 warnings() {
   local lines
   lines=$(jq -r --arg cmd "$2" '
@@ -132,7 +133,7 @@ warnings() {
   [[ -n "$lines" ]] || return 0
   local wcode msg
   while IFS=$'\t' read -r wcode msg; do
-    [[ "$wcode" == HTTP_REPO_BLOCKED ]] && continue
+    case "$wcode" in HTTP_REPO_BLOCKED|TRANSITIVE_REPO_DROPPED|WEAK_HASH_FALLBACK) continue ;; esac
     echo "::warning title=$(esc_prop "raeva $wcode")::$(esc_msg "$msg")"
   done <<< "$lines"
   printf '\nWarnings:\n' >> "$summary"

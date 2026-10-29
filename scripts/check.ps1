@@ -117,8 +117,9 @@ function Fenced([string]$Text) {
 
 # One annotation per warning code, as raeva's own text summary prints them:
 # the first warning with its context, and how many more share the code.
-# HTTP_REPO_BLOCKED names an http: repository that some POM declares and is
-# listed in the summary only.
+# Only the job summary lists HTTP_REPO_BLOCKED, for an http: repository that
+# some POM declares, and the two codes raeva's text summary omits too:
+# TRANSITIVE_REPO_DROPPED and WEAK_HASH_FALLBACK.
 function Write-Warnings($Envelope, [string]$Command) {
     if (-not $Envelope -or -not $Envelope.PSObject.Properties['data'] -or -not $Envelope.data -or
         -not $Envelope.data.PSObject.Properties['warnings']) { return }
@@ -133,7 +134,7 @@ function Write-Warnings($Envelope, [string]$Command) {
             if ($pairs.Count -gt 0) { $text += " ($($pairs -join ', '))" }
         }
         if ($group.Count -gt 1) { $text += "; and $($group.Count - 1) more (raeva --json $Command lists them)" }
-        if ($group.Name -cne 'HTTP_REPO_BLOCKED') {
+        if ($group.Name -cnotin @('HTTP_REPO_BLOCKED', 'TRANSITIVE_REPO_DROPPED', 'WEAK_HASH_FALLBACK')) {
             Write-Output "::warning title=$(EscProp "raeva $($group.Name)")::$(EscMsg $text)"
         }
         $lines += "$($group.Name) $text"

@@ -38,7 +38,12 @@ done
 case "$1" in
   sync)
     if [[ " $* " == *' --frozen '* ]]; then
-      printf '{"code":"LOCKFILE_MISMATCH","error":"stale lock","data":{"warnings":[]}}\n'
+      if [[ -n "${FROZEN_JSON+set}" ]]; then
+        printf '%s' "$FROZEN_JSON"
+      else
+        printf '{"code":"LOCKFILE_MISMATCH","error":"stale lock","data":{"warnings":[]}}\n'
+      fi
+      [[ -z "${FROZEN_STDERR:-}" ]] || printf '%s' "$FROZEN_STDERR" >&2
       exit "${FROZEN_CODE:-7}"
     fi
     [[ "${SYNC_CODE:-0}" == 0 ]] || exit "$SYNC_CODE"
@@ -278,6 +283,17 @@ for tag in "${variants[@]}"; do
   expect "$tag: an incomplete scan without a SARIF log reaches the gate" 0 $?
   has "$t/summary" 'wrote no SARIF log' && [[ "$(output vuln-exit-code)" == 4 ]] \
     && ok "$tag: the summary says the scan wrote no SARIF log" || bad "$tag: incomplete scan without a SARIF log"
+
+  # Warnings a maintainer cannot act on are listed in the summary only.
+  warned='{"data":{"resolved":2,"warnings":[{"code":"TRANSITIVE_REPO_DROPPED","message":"dropped","context":null},{"code":"WEAK_HASH_FALLBACK","message":"sha1 only","context":null},{"code":"HTTP_REPO_BLOCKED","message":"http repo","context":null},{"code":"JAVA_VERSION_DEFAULTED","message":"java 17","context":null}]}}'
+  run env INPUT_CHECK=true FROZEN_CODE=0 FROZEN_JSON="$warned" "${check[@]}" scan
+  expect "$tag: a current lock with warnings passes" 0 $?
+  has "$t/log" '::warning title=raeva JAVA_VERSION_DEFAULTED::java 17' && ! has "$t/log" 'title=raeva TRANSITIVE_REPO_DROPPED' \
+    && ! has "$t/log" 'title=raeva WEAK_HASH_FALLBACK' && ! has "$t/log" 'title=raeva HTTP_REPO_BLOCKED' \
+    && ok "$tag: only actionable warnings become annotations" || bad "$tag: warning annotations"
+  has "$t/summary" 'TRANSITIVE_REPO_DROPPED dropped' && has "$t/summary" 'WEAK_HASH_FALLBACK sha1 only' \
+    && has "$t/summary" 'HTTP_REPO_BLOCKED http repo' && has "$t/summary" 'JAVA_VERSION_DEFAULTED java 17' \
+    && ok "$tag: the summary lists every warning" || bad "$tag: summary warnings"
 
   # The JDK suffix belongs to the lock and config, never to --platforms.
   cp "$t/original.lock" "$t/saved.lock"

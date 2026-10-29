@@ -283,6 +283,9 @@ function Invoke-Frozen {
         } else { 'raeva wrote no JSON error and no output.' }
     }
     $hints = if ($envelope -and $envelope.PSObject.Properties['hints'] -and @($envelope.hints).Count -gt 0) { @($envelope.hints) -join "`n" } else { Hint $ecode }
+    if ($ecode -ceq 'LOCKFILE_INVALID' -and $message -like '*schema version*') {
+        $hints += "`nIf a newer raeva wrote raeva.lock, raise the ``version`` input to that release."
+    }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
     $level = if ($checkMode -eq 'report-only' -and $code -eq 7) { 'warning' } else { 'error' }
     Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"

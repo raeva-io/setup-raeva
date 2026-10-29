@@ -78,7 +78,7 @@ either form.
 
 Set `version` to an exact raeva release, 0.5.0 or newer, the one your
 developers use. A lock written by a newer raeva can use a schema that an older
-one refuses.
+one refuses; the check then fails and asks you to raise `version`.
 
 ## Recipes
 

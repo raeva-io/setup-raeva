@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Local checks with fixed CLI and API replies. PWSH enables the same checks
 # through PowerShell. No release downloads or advisory service are needed.
-# shellcheck disable=SC2015
+# Backticks in single quotes are literal Markdown.
+# shellcheck disable=SC2015,SC2016
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 t=$(mktemp -d "${TMPDIR:-/tmp}/setup-raeva-check.XXXXXX")
@@ -209,7 +210,6 @@ sed 's/steps\.scan-windows\.outputs\.vuln-exit-code/steps.scan-unix.outputs.vuln
 python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "a Windows step reading the Bash step is caught" || ok "a Windows step reading the Bash step is caught"
 sed 's/steps\.windows\.outputs\.version/steps.install-win.outputs.version/' "$here/action.yml" > "$t/broken/action.yml"
 python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an unknown step id is caught" || ok "an unknown step id is caught"
-# shellcheck disable=SC2016
 sed -i 's/Out .vuln-findings. \$count/Out "x" $count/' "$t/broken/scripts/check.ps1"
 cp "$here/action.yml" "$t/broken/action.yml"
 python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an output no script writes is caught" || ok "an output no script writes is caught"
@@ -298,6 +298,19 @@ for tag in "${variants[@]}"; do
   run env INPUT_CHECK=true FROZEN_CODE=137 FROZEN_JSON='' "${check[@]}" scan
   expect "$tag: a silent kill keeps its exit code" 137 $?
   has "$t/log" 'no JSON error and no output' && ok "$tag: a silent kill says so" || bad "$tag: silent kill"
+
+  # A lock that a newer raeva wrote needs a newer version input.
+  for message in 'raeva.lock has schema version 8, which a newer raeva wrote; this raeva reads schema 7' \
+    'failed to parse lockfile /w/schema/raeva.lock: unclosed array'; do
+    run env INPUT_CHECK=true FROZEN_CODE=3 FROZEN_JSON="{\"code\":\"LOCKFILE_INVALID\",\"error\":\"$message\",\"hints\":[\"Upgrade raeva.\"]}" "${check[@]}" scan
+    expect "$tag: an invalid lock fails" 3 $?
+    if [[ "$message" == *'schema version'* ]]; then
+      grep '^::error file=' "$t/log" | grep -qF 'Upgrade raeva.%0AIf a newer raeva wrote raeva.lock, raise the `version` input' \
+        && has "$t/summary" 'raise the `version` input' && ok "$tag: a newer schema asks for a newer version input" || bad "$tag: schema hint"
+    else
+      ! has "$t/log" 'raise the `version` input' && ok "$tag: other invalid locks keep raeva's hints" || bad "$tag: schema hint on a parse error"
+    fi
+  done
 
   # Warnings a maintainer cannot act on are listed in the summary only.
   warned='{"data":{"resolved":2,"warnings":[{"code":"TRANSITIVE_REPO_DROPPED","message":"dropped","context":null},{"code":"WEAK_HASH_FALLBACK","message":"sha1 only","context":null},{"code":"HTTP_REPO_BLOCKED","message":"http repo","context":null},{"code":"JAVA_VERSION_DEFAULTED","message":"java 17","context":null}]}}'

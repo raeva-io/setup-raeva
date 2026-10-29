@@ -349,6 +349,24 @@ for tag in "${variants[@]}"; do
     && has "$t/summary" 'HTTP_REPO_BLOCKED http repo' && has "$t/summary" 'JAVA_VERSION_DEFAULTED java 17' \
     && ok "$tag: the summary lists every warning" || bad "$tag: summary warnings"
 
+  # The gate names the findings that fail the job, as the summary counts them.
+  r() { printf '{"ruleId":"%s","properties":{"severity":"%s"}%s}' "$1" "$2" "${3:-}"; }
+  sarif="{\"runs\":[{\"results\":[$(r CVE-b High),$(r CVE-a High),$(r GHSA-c Critical),$(r GHSA-c Critical),$(r CVE-low Low),$(r CVE-unk 'Unknown (no CVSS score)'),$(r CVE-sup Critical ',"suppressions":[{"kind":"external"}]'),$(r 'bad\nid' High),$(r CVE-d High),$(r CVE-e High)]}]}"
+  run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  expect "$tag: findings reach the gate" 0 $?
+  failing="8 findings at or above 'high' (GHSA-c, CVE-a, CVE-b, CVE-d, CVE-e, and 2 more)"
+  [[ "$(output vuln-failing)" == "$failing" ]] && has "$t/summary" "The job fails on $failing." \
+    && ok "$tag: the summary names the failing findings" || bad "$tag: failing findings ($(output vuln-failing))"
+  run env VULN_EXIT_CODE=1 VULN_FAILING="$failing" "${check[@]}" gate
+  expect "$tag: the gate fails on findings" 1 $?
+  has "$t/log" "::error title=raeva vuln::The job fails on $failing; see the job summary and the scan output" \
+    && ok "$tag: the gate annotation names the advisories" || bad "$tag: gate annotation"
+  run env VULN_EXIT_CODE=1 "${check[@]}" gate
+  has "$t/log" "::error title=raeva vuln::findings at or above 'high'; see the job summary and the scan output" \
+    && ok "$tag: the gate keeps its message without a list" || bad "$tag: gate without a list"
+  run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=0 "${check[@]}" scan
+  [[ -z "$(output vuln-failing)" ]] && ok "$tag: a passing scan lists no failing findings" || bad "$tag: failing list after exit 0"
+
   # The JDK suffix belongs to the lock and config, never to --platforms.
   cp "$t/original.lock" "$t/saved.lock"
   sed 's/^conflict //' > "$t/project/raeva.lock" <<'LOCK'
@@ -402,6 +420,10 @@ LOCK
   [[ "$tag" != bash ]] || has "$t/summary" '### raeva.lock' && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
   has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
     && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
+  run env -C "$t/project" INPUT_VULN=true INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 SCAN_CODE=1 \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
+  [[ "$(output vuln-failing)" == "1 new finding at or above 'high' (CVE-new)" ]] \
+    && ok "$tag: only new findings fail a pull request" || bad "$tag: failing findings with a baseline ($(output vuln-failing))"
 
   # ./ and a trailing slash name the same root as . and module.
   mkdir -p "$t/project/module"

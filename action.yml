@@ -325,6 +325,7 @@ runs:
       run: '"$GITHUB_ACTION_PATH/scripts/check.sh" gate'
       env:
         VULN_EXIT_CODE: ${{ steps.scan-unix.outputs.vuln-exit-code }}
+        VULN_FAILING: ${{ steps.scan-unix.outputs.vuln-failing }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
 
     - if: inputs.vuln == 'true' && runner.os == 'Windows' && steps.scan-windows.outputs.vuln-exit-code != '0'
@@ -332,4 +333,5 @@ runs:
       run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" gate; exit $LASTEXITCODE'
       env:
         VULN_EXIT_CODE: ${{ steps.scan-windows.outputs.vuln-exit-code }}
+        VULN_FAILING: ${{ steps.scan-windows.outputs.vuln-failing }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}

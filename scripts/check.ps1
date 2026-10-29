@@ -398,6 +398,38 @@ function Write-FindingsTable($Log) {
     Summary ($lines -join "`n")
 }
 
+# The results raeva's --fail-on counted, for the summary and the gate: not
+# suppressed, not in the baseline, and at the threshold or above, where an
+# unknown severity meets every threshold. Returns, for example, "2 new
+# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
+function Get-FailingFindings($Log, [string]$FailOn, [string]$New) {
+    $max = switch -CaseSensitive ($FailOn) { 'any' { 4 } 'low' { 3 } 'medium' { 2 } 'high' { 1 } 'critical' { 0 } }
+    $count = 0
+    $best = @{}
+    foreach ($run in $Log.runs) {
+        if (-not $run.PSObject.Properties['results']) { continue }
+        foreach ($result in $run.results) {
+            if ($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0) { continue }
+            if ($result.PSObject.Properties['baselineState'] -and "$($result.baselineState)" -ceq 'unchanged') { continue }
+            $severity = if ($result.PSObject.Properties['properties'] -and $result.properties -and
+                $result.properties.PSObject.Properties['severity'] -and $null -ne $result.properties.severity) { "$($result.properties.severity)" } else { 'Unknown' }
+            $rank = switch -CaseSensitive ($severity) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } 'None' { 4 } default { 5 } }
+            if ($rank -ne 5 -and $rank -gt $max) { continue }
+            $count++
+            $id = if ($result.PSObject.Properties['ruleId'] -and $null -ne $result.ruleId) { "$($result.ruleId)" -creplace '[^A-Za-z0-9._:-]', '' } else { '' }
+            if ($id.Length -gt 64) { $id = $id.Substring(0, 64) }
+            if ($id -and (-not $best.ContainsKey($id) -or $best[$id] -gt $rank)) { $best[$id] = $rank }
+        }
+    }
+    if ($count -eq 0) { return '' }
+    $keys = [string[]]@($best.Keys | ForEach-Object { "$($best[$_])`t$_" })
+    [Array]::Sort($keys, [StringComparer]::Ordinal)
+    $ids = @($keys | ForEach-Object { $_.Substring(2) })
+    $text = "$count $($New)finding$(if ($count -ne 1) { 's' }) at or above '$FailOn' (" + (($ids | Select-Object -First 5) -join ', ')
+    if ($ids.Count -gt 5) { $text += ", and $($ids.Count - 5) more" }
+    "$text)"
+}
+
 function Invoke-Vuln {
     $failOn = if ($env:INPUT_VULN_FAIL_ON) { $env:INPUT_VULN_FAIL_ON } else { 'high' }
     if ($failOn -notin @('any', 'low', 'medium', 'high', 'critical', 'never')) {
@@ -460,6 +492,13 @@ function Invoke-Vuln {
         Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s)$note in the partial SARIF log."
     } else {
         Summary "`n``raeva vuln``: $count finding(s)$note; $gating."
+    }
+    if ($code -eq 1 -and $failOn -ne 'never') {
+        $failing = Get-FailingFindings $log $failOn $(if ($baseLock) { 'new ' } else { '' })
+        if ($failing) {
+            Out 'vuln-failing' $failing
+            Summary "`nThe job fails on $failing."
+        }
     }
     Write-FindingsTable $log
     Test-SarifUpload
@@ -526,7 +565,11 @@ function Invoke-Gate {
     $code = if ($env:VULN_EXIT_CODE) { [int]$env:VULN_EXIT_CODE } else { 0 }
     $failOn = if ($env:INPUT_VULN_FAIL_ON) { $env:INPUT_VULN_FAIL_ON } else { 'high' }
     if ($code -eq 1 -and $failOn -ne 'never') {
-        Write-Output "::error title=raeva vuln::findings at or above '$failOn'; see the job summary and the scan output"
+        if ($env:VULN_FAILING) {
+            Write-Output "::error title=raeva vuln::$(EscMsg "The job fails on $env:VULN_FAILING"); see the job summary and the scan output"
+        } else {
+            Write-Output "::error title=raeva vuln::findings at or above '$failOn'; see the job summary and the scan output"
+        }
         exit 1
     }
     if ($code -notin 0, 1) {

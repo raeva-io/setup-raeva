@@ -372,6 +372,29 @@ findings_table() {
       end' "$1" >> "$summary" 2>/dev/null || true
 }
 
+# The results raeva's --fail-on counted, for the summary and the gate: not
+# suppressed, not in the baseline, and at the threshold or above, where an
+# unknown severity meets every threshold. Prints, for example, "2 new
+# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
+failing_findings() { # <SARIF log> <vuln-fail-on> <"new " or empty>
+  jq -r --arg on "$2" --arg new "$3" '
+    def rank: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4}[tostring] // 5;
+    {"any": 4, "low": 3, "medium": 2, "high": 1, "critical": 0}[$on] as $max
+    | [.runs[].results[]?
+        | select((.suppressions // []) | length == 0)
+        | select(.baselineState != "unchanged")
+        | {r: (.properties.severity // "Unknown" | rank),
+           id: (.ruleId // "" | tostring | gsub("[^A-Za-z0-9._:-]"; "") | .[:64])}
+        | select(.r == 5 or .r <= $max)]
+    | length as $n
+    | [group_by(.id)[] | min_by(.r) | select(.id != "")] | sort_by(.r, .id) | map(.id) as $ids
+    | select($n > 0)
+    | "\($n) \($new)finding\(if $n == 1 then "" else "s" end) at or above '"'"'\($on)'"'"' ("
+      + ($ids[:5] | join(", "))
+      + (if ($ids | length) > 5 then ", and \(($ids | length) - 5) more" else "" end) + ")"
+    ' "$1" 2>/dev/null || true
+}
+
 vuln() {
   local fail_on="${INPUT_VULN_FAIL_ON:-high}"
   case "$fail_on" in
@@ -432,6 +455,14 @@ vuln() {
   else
     printf '\n`raeva vuln`: %s finding(s)%s; %s.\n' "$count" "$note" "$gating" >> "$summary"
   fi
+  if [[ $code -eq 1 && "$fail_on" != never ]]; then
+    local failing
+    failing=$(failing_findings "$sarif" "$fail_on" "${base_lock:+new }")
+    if [[ -n "$failing" ]]; then
+      out vuln-failing "$failing"
+      printf '\nThe job fails on %s.\n' "$failing" >> "$summary"
+    fi
+  fi
   findings_table "$sarif"
   sarif_upload
 }
@@ -442,7 +473,11 @@ gate() {
     0) ;;
     1)
       if [[ "$fail_on" != never ]]; then
-        echo "::error title=raeva vuln::findings at or above '$fail_on'; see the job summary and the scan output"
+        if [[ -n "${VULN_FAILING:-}" ]]; then
+          echo "::error title=raeva vuln::$(esc_msg "The job fails on $VULN_FAILING"); see the job summary and the scan output"
+        else
+          echo "::error title=raeva vuln::findings at or above '$fail_on'; see the job summary and the scan output"
+        fi
         exit 1
       fi ;;
     *)

@@ -299,7 +299,9 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
 8. With `vuln: true`, runs `raeva vuln --format sarif`, writes a findings
    table to the job summary, uploads the log to code scanning, and then fails
    the job if a finding meets `vuln-fail-on`. On pull requests and in merge
-   queues only new findings count. An incomplete scan uploads the findings it
+   queues only new findings count. The summary and the error annotation
+   count the findings that fail the job and name up to five of their
+   advisories. An incomplete scan uploads the findings it
    has and fails the job. When code scanning answers the job token that it
    is not enabled, as in a private repository without GitHub Code Security,
    the upload is skipped with one notice.

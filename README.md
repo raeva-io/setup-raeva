@@ -301,10 +301,10 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    the job if a finding meets `vuln-fail-on`. On pull requests and in merge
    queues only new findings count. The summary and the error annotation
    count the findings that fail the job and name up to five of their
-   advisories. An incomplete scan uploads the findings it
-   has and fails the job. When code scanning answers the job token that it
-   is not enabled, as in a private repository without GitHub Code Security,
-   the upload is skipped with one notice.
+   advisories. An incomplete scan uploads the findings it has and fails the
+   job. When code scanning answers the job token that it is not enabled, as
+   in a private repository without GitHub Code Security, or that the token
+   may not use it, the upload is skipped with one notice.
 9. With `relock: true`, runs `raeva sync` for every platform the lock
    records, also from a conflicted lock. JDK suffixes stay in the lock; keep
    `[lock] jdks` in `raeva.toml` for a JDK matrix. The action never commits

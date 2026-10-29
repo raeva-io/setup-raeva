@@ -558,13 +558,13 @@ a=$(output_of pr-diff-a lock-diff-artifact)
 b=$(output_of pr-diff-b lock-diff-artifact)
 [[ -n "$a" && -n "$b" && "$a" != "$b" ]] && ok "bash: services/api and services-api keep their own artifacts" || bad "bash: services/api and services-api keep their own artifacts ($a, $b)"
 
-# The probe asks with the job token, which the upload uses, and a 403 that
-# is only about reading alerts leaves the upload to try.
+# The probe asks with the job token, which the upload uses. A job token that
+# may not even read alerts cannot upload.
 printf '{"message":"Resource not accessible by integration"}' > "$scratch/403-perm.json"
 run_env probe-perm env PATH="$fake_path" STUB_CURL_STATUS=403 STUB_CURL_BODY="$scratch/403-perm.json" STUB_CURL_HEADERS="$scratch/probe-headers" \
   RAEVA_BIN="$stub" INPUT_VULN=true INPUT_VEX=v.json INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GH_TOKEN=read-token UPLOAD_TOKEN=job-token \
   bash "$here/scripts/check.sh" scan
-[[ "$(output_of probe-perm sarif-upload)" == true ]] && ok "bash: upload after a 403 about alert access" || bad "bash: upload after a 403 about alert access"
+[[ -z "$(output_of probe-perm sarif-upload)" ]] && ok "bash: no upload when the job token may not read alerts" || bad "bash: no upload when the job token may not read alerts"
 grep -qxF 'Authorization: Bearer job-token' "$scratch/probe-headers" && ok "bash: the probe uses the job token" || bad "bash: the probe uses the job token"
 
 # raeva's output reaches the log with workflow commands off.

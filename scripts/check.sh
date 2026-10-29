@@ -331,19 +331,26 @@ sarif_category() {
 }
 
 # An upload that code scanning refuses only adds an error annotation, so ask
-# first, with the token the upload uses. Only a 403 that says code scanning
-# is not enabled, as for a private repository without GitHub Code Security,
-# skips the upload; a token that may not read alerts can still upload.
+# first, with the token the upload uses. A 403 that says code scanning is not
+# enabled, as for a private repository without GitHub Code Security, skips
+# the upload, and so does one that says the job token may not read alerts:
+# security-events: write would include read. Any other answer leaves the
+# upload to try.
 sarif_upload() {
   [[ "${INPUT_SARIF_UPLOAD:-false}" == true && -n "${GITHUB_REPOSITORY:-}" ]] || return 0
-  local body="$run/code-scanning.json" status why=""
+  local body="$run/code-scanning.json" status why="" cause=""
   status=$(printf 'Authorization: Bearer %s\n' "$upload_token" | curl --proto '=https' --tlsv1.2 --silent --show-error --retry 3 --max-time 60 \
     -H @- -H 'Accept: application/vnd.github+json' -o "$body" -w '%{http_code}' \
     "$api/repos/$GITHUB_REPOSITORY/code-scanning/alerts?per_page=1") || status=000
   if [[ "$status" == 403 ]]; then
     why=$(jq -r '.message // empty' "$body" 2>/dev/null | cut -c1-200 || true)
-    if printf '%s' "$why" | grep -qiE 'must be enabled|not enabled'; then
-      echo "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(esc_msg "$why")). A private repository needs GitHub Code Security. The findings are in the job summary; sarif-upload: false skips this check."
+    if grep -qiE 'must be enabled|not enabled' <<< "$why"; then
+      cause="A private repository needs GitHub Code Security."
+    elif grep -qiF 'Resource not accessible by integration' <<< "$why"; then
+      cause="The upload needs security-events: write, which pull requests from forks do not get."
+    fi
+    if [[ -n "$cause" ]]; then
+      echo "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(esc_msg "$why")). $cause The findings are in the job summary; sarif-upload: false skips this check."
       return 0
     fi
   fi

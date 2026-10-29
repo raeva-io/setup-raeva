@@ -107,8 +107,9 @@ inputs:
     description: >-
       Upload the SARIF log to GitHub code scanning. The job needs
       security-events: write, and private repositories need GitHub Code
-      Security. When code scanning says it is not enabled, the upload is
-      skipped with a notice; the findings are in the job summary either way.
+      Security. When code scanning says it is not enabled, or that the job
+      token may not use it, the upload is skipped with a notice; the findings
+      are in the job summary either way.
     default: "true"
   sarif-category:
     description: >-
@@ -307,8 +308,8 @@ runs:
         overwrite: true
         if-no-files-found: ignore
 
-    # The scan step skips the upload when code scanning is not enabled. Any other
-    # refused upload, such as one with a read-only token, warns instead of
+    # The scan step skips the upload when code scanning is not enabled or
+    # refuses the job token. Any other refused upload warns instead of
     # failing the job.
     - if: >-
         inputs.vuln == 'true' && (steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file) &&

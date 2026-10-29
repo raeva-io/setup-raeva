@@ -332,9 +332,11 @@ function Get-SarifCategory {
 }
 
 # An upload that code scanning refuses only adds an error annotation, so ask
-# first, with the token the upload uses. Only a 403 that says code scanning
-# is not enabled, as for a private repository without GitHub Code Security,
-# skips the upload; a token that may not read alerts can still upload.
+# first, with the token the upload uses. A 403 that says code scanning is not
+# enabled, as for a private repository without GitHub Code Security, skips
+# the upload, and so does one that says the job token may not read alerts:
+# security-events: write would include read. Any other answer leaves the
+# upload to try.
 function Test-SarifUpload {
     if ($env:INPUT_SARIF_UPLOAD -ne 'true' -or -not $env:GITHUB_REPOSITORY) { return }
     $status = 0
@@ -345,9 +347,13 @@ function Test-SarifUpload {
         $status = [int]$response.StatusCode
         if ($status -eq 403) { try { $why = "$(($response.Content | ConvertFrom-Json).message)" } catch { } }
     } catch { }
-    if ($status -eq 403 -and $why -match 'must be enabled|not enabled') {
+    $cause = if ($status -ne 403) { '' }
+        elseif ($why -match 'must be enabled|not enabled') { 'A private repository needs GitHub Code Security.' }
+        elseif ($why -like '*Resource not accessible by integration*') { 'The upload needs security-events: write, which pull requests from forks do not get.' }
+        else { '' }
+    if ($cause) {
         if ($why.Length -gt 200) { $why = $why.Substring(0, 200) }
-        Write-Output "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(EscMsg $why)). A private repository needs GitHub Code Security. The findings are in the job summary; sarif-upload: false skips this check."
+        Write-Output "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(EscMsg $why)). $cause The findings are in the job summary; sarif-upload: false skips this check."
         return
     }
     Out 'sarif-upload' 'true'

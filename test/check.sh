@@ -100,6 +100,9 @@ elif '/git/blobs/' in url:
         status = 404
 elif '/contents/' in url:
     body = 'display diff response, never a vulnerability baseline\n'
+elif '/code-scanning/alerts' in url:
+    status = int(os.getenv('CS_STATUS', '200'))
+    body = {'message': os.getenv('CS_MESSAGE', '')} if status != 200 else []
 else:
     sys.exit('unexpected request')
 Path(os.environ['TEST_DIR'], 'requests').open('a').write(url + '\n')
@@ -366,6 +369,19 @@ for tag in "${variants[@]}"; do
     && ok "$tag: the gate keeps its message without a list" || bad "$tag: gate without a list"
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=0 "${check[@]}" scan
   [[ -z "$(output vuln-failing)" ]] && ok "$tag: a passing scan lists no failing findings" || bad "$tag: failing list after exit 0"
+
+  # The upload is skipped only when code scanning refuses the job token.
+  for case in 'Resource not accessible by integration|skip' 'API rate limit exceeded|upload'; do
+    IFS='|' read -r message want <<< "$case"
+    run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r CS_STATUS=403 CS_MESSAGE="$message" "${check[@]}" scan
+    expect "$tag: a refused probe does not fail the scan ($message)" 0 $?
+    if [[ "$want" == skip ]]; then
+      [[ -z "$(output sarif-upload)" && $(grep -c '^::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 (Resource not accessible by integration). The upload needs security-events: write' "$t/log") == 1 ]] \
+        && ok "$tag: a token without code scanning access skips the upload" || bad "$tag: token without access"
+    else
+      [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: other 403 answers leave the upload to try" || bad "$tag: other 403"
+    fi
+  done
 
   # The JDK suffix belongs to the lock and config, never to --platforms.
   cp "$t/original.lock" "$t/saved.lock"

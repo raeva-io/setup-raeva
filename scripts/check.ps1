@@ -261,15 +261,29 @@ function Invoke-Frozen {
     if ($env:INPUT_PLATFORMS) { $arguments += @('--platforms', $env:INPUT_PLATFORMS) }
     $json = Join-Path $runDir 'frozen.json'
     $err = Join-Path $runDir 'frozen.err'
+    Write-Output "Checking raeva.lock with raeva sync --frozen; its output follows when it exits."
     $code = Invoke-Raeva $arguments $json $err
     Write-Raw @($err)
     Out 'frozen-exit-code' $code
     $envelope = $null
     try { $envelope = Get-Content -LiteralPath $json -Raw | ConvertFrom-Json } catch { }
     if ($code -eq 0) {
-        $resolved = if ($envelope -and $envelope.data.PSObject.Properties['resolved']) { " ($($envelope.data.resolved) dependencies)" } else { '' }
-        Write-Output "raeva.lock is current$resolved"
-        Summary "### raeva`n`n``raeva.lock`` is current."
+        $parts = @()
+        $data = if ($envelope -and $envelope.PSObject.Properties['data']) { $envelope.data } else { $null }
+        $field = { param($name) if ($data -and $data.PSObject.Properties[$name]) { $data.$name } else { $null } }
+        $isNumber = { param($value) $value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal] -or $value -is [bigint] }
+        $resolved = & $field 'resolved'
+        if (& $isNumber $resolved) { $parts += "$resolved dependencies" }
+        $platforms = @(& $field 'platforms' | Where-Object { $_ -is [string] -and $_ -cmatch '\A[A-Za-z0-9_.@+-]+\z' })
+        if ($platforms.Count -gt 0) { $parts += $platforms -join ', ' }
+        $ms = & $field 'duration_ms'
+        if (& $isNumber $ms) {
+            $tenths = [math]::Floor(([double]$ms + 50) / 100)
+            $parts += "$([math]::Floor($tenths / 10)).$($tenths % 10) s"
+        }
+        $details = if ($parts.Count -gt 0) { " ($($parts -join '; '))" } else { '' }
+        Write-Output "raeva.lock is current$details"
+        Summary "### raeva`n`n``raeva.lock`` is current$details."
         Write-Warnings $envelope 'sync --frozen'
         return
     }
@@ -393,6 +407,7 @@ function Invoke-Vuln {
         if ($path) { $arguments += @('--vex', $path) }
     }
     $arguments += $maven
+    Write-Output "Scanning raeva.lock with raeva vuln; its output follows when it exits."
     $code = Invoke-Raeva $arguments $sarif $err
     Write-Raw @($err)
     Out 'vuln-exit-code' $code

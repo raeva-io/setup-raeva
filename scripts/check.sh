@@ -264,14 +264,19 @@ frozen() {
   local args=(--json -C "$workdir" sync --frozen ${maven[@]+"${maven[@]}"})
   [[ -z "${INPUT_PLATFORMS:-}" ]] || args+=(--platforms "$INPUT_PLATFORMS")
   local json="$run/frozen.json" code=0
+  echo "Checking raeva.lock with raeva sync --frozen; its output follows when it exits."
   "$raeva" "${args[@]}" > "$json" 2> "$run/frozen.err" || code=$?
   raw cat "$run/frozen.err"
   out frozen-exit-code "$code"
   if [[ $code -eq 0 ]]; then
-    local resolved
-    resolved=$(jq -r '.data.resolved // empty' "$json" 2>/dev/null || true)
-    echo "raeva.lock is current${resolved:+ ($resolved dependencies)}"
-    printf '### raeva\n\n`raeva.lock` is current.\n' >> "$summary"
+    local details
+    details=$(jq -r '.data | [
+        (.resolved | numbers | "\(.) dependencies"),
+        ([.platforms[]? | strings | select(test("\\A[A-Za-z0-9_.@+-]+\\z"))] | select(length > 0) | join(", ")),
+        (.duration_ms | numbers | (. + 50) / 100 | floor | "\(. / 10 | floor).\(. % 10) s")
+      ] | join("; ")' "$json" 2>/dev/null || true)
+    echo "raeva.lock is current${details:+ ($details)}"
+    printf '### raeva\n\n`raeva.lock` is current%s.\n' "${details:+ ($details)}" >> "$summary"
     warnings "$json" "sync --frozen"
     return 0
   fi
@@ -380,6 +385,7 @@ vuln() {
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" ]] || vex+=(--vex "$line")
   done <<< "${INPUT_VEX:-}"
+  echo "Scanning raeva.lock with raeva vuln; its output follows when it exits."
   "$raeva" -C "$workdir" vuln --format sarif --fail-on "$fail_on" ${baseline[@]+"${baseline[@]}"} ${vex[@]+"${vex[@]}"} ${maven[@]+"${maven[@]}"} > "$sarif" 2> "$errlog" || code=$?
   raw cat "$errlog"
   out vuln-exit-code "$code"

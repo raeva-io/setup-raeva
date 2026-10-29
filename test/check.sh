@@ -284,6 +284,20 @@ for tag in "${variants[@]}"; do
   has "$t/summary" 'wrote no SARIF log' && [[ "$(output vuln-exit-code)" == 4 ]] \
     && ok "$tag: the summary says the scan wrote no SARIF log" || bad "$tag: incomplete scan without a SARIF log"
 
+  # The step says what runs before raeva's buffered output, and what passed.
+  for case in '25349 25.3' '25350 25.4' '49 0.0'; do
+    read -r ms seconds <<< "$case"
+    run env INPUT_CHECK=true INPUT_VULN=true FROZEN_CODE=0 \
+      FROZEN_JSON="{\"data\":{\"resolved\":727,\"platforms\":[\"linux-x86_64\",\"x\\n::error::y\",\"macos-aarch64\"],\"duration_ms\":$ms,\"warnings\":[]}}" "${check[@]}" scan
+    expect "$tag: a current lock passes ($ms ms)" 0 $?
+    line="raeva.lock is current (727 dependencies; linux-x86_64, macos-aarch64; $seconds s)"
+    has "$t/log" "$line" && has "$t/summary" "\`raeva.lock\` is current (727 dependencies; linux-x86_64, macos-aarch64; $seconds s)." \
+      && ok "$tag: success names the platforms and the time ($ms ms)" || bad "$tag: success line ($ms ms)"
+  done
+  [[ "$(head -n 1 "$t/log")" == 'Checking raeva.lock with raeva sync --frozen; its output follows when it exits.' ]] \
+    && has "$t/log" 'Scanning raeva.lock with raeva vuln; its output follows when it exits.' \
+    && ok "$tag: says what runs before the output" || bad "$tag: no line before the run"
+
   # A crash, a kill, or a binary that cannot load writes no JSON envelope.
   crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom\n\n')
   run env INPUT_CHECK=true FROZEN_CODE=101 FROZEN_JSON='' FROZEN_STDERR="$crash" "${check[@]}" scan

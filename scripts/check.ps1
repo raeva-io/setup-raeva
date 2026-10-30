@@ -546,7 +546,10 @@ function Read-PrBaseline {
             if ($tree -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'invalid tree SHA' }
             $data = Get-BaseJson "git/trees/$tree"
             if (Test-Fails { $data.truncated -ne $false -or $data.tree -isnot [array] }) { throw 'invalid or truncated tree response' }
-            $entries = @($data.tree | Where-Object { $_ -is [pscustomobject] -and $_.PSObject.Properties['path'] -and $_.path -ceq $part })
+            # jq cannot read .path of an entry that is not an object or null.
+            # [pscustomobject] is [psobject], which matches any value in a pipeline.
+            foreach ($e in $data.tree) { if ($null -ne $e -and $e -isnot [Management.Automation.PSCustomObject]) { throw 'invalid tree entry' } }
+            $entries = @($data.tree | Where-Object { $null -ne $_ -and $_.PSObject.Properties['path'] -and $_.path -ceq $part })
             if ($entries.Count -eq 0) {
                 $script:baseMissing = $true
                 Write-Host '::notice title=setup-raeva::The base commit has no raeva.lock for this root; vulnerability findings are report-only (--fail-on never). Scan errors still fail.'

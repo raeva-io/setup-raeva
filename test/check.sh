@@ -91,6 +91,8 @@ if '/git/trees/' in url:
     if case == 'nosha':
         del entry['sha']
     body = {'tree': [] if case == 'missing' else [entry], 'truncated': case == 'truncated'}
+    if case == 'garbage':
+        body['tree'] = ['garbage']
     if case == 'notjson':
         body = 'not json'
 elif '/git/blobs/' in url:
@@ -547,7 +549,7 @@ LOCK
   for error in 403:'HTTP 403' 404:'HTTP 404' 500:'HTTP 500' transport:'request failed' \
     malformed:'unreadable blob response' empty:'raeva.lock is empty' \
     truncated:'invalid or truncated tree response' symlink:'raeva.lock is not a regular file' blob404:'HTTP 404' \
-    notjson:'invalid or truncated tree response' nosha:'invalid object SHA'; do
+    notjson:'invalid or truncated tree response' nosha:'invalid object SHA' garbage:'invalid tree entry'; do
     why=${error#*:} error=${error%%:*}
     run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE="$error" \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan

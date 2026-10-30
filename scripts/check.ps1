@@ -134,6 +134,8 @@ function Write-Warnings($Envelope, [string]$Command) {
             $pairs = @($first.context.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" })
             if ($pairs.Count -gt 0) { $text += " ($($pairs -join ', '))" }
         }
+        # One line each, as a code and its text are one line in the summary.
+        $text = $text -replace '[\r\n\t]+', ' '
         if ($group.Count -gt 1) { $text += "; and $($group.Count - 1) more (raeva --json $Command lists them)" }
         if ($group.Name -cnotin @('HTTP_REPO_BLOCKED', 'TRANSITIVE_REPO_DROPPED', 'WEAK_HASH_FALLBACK')) {
             Write-Output "::warning title=$(EscProp "raeva $($group.Name)")::$(EscMsg $text)"

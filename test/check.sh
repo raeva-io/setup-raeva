@@ -351,6 +351,9 @@ for tag in "${variants[@]}"; do
   has "$t/summary" 'TRANSITIVE_REPO_DROPPED dropped' && has "$t/summary" 'WEAK_HASH_FALLBACK sha1 only' \
     && has "$t/summary" 'HTTP_REPO_BLOCKED http repo' && has "$t/summary" 'JAVA_VERSION_DEFAULTED java 17' \
     && ok "$tag: the summary lists every warning" || bad "$tag: summary warnings"
+  run env INPUT_CHECK=true FROZEN_CODE=0 FROZEN_JSON='{"data":{"warnings":[{"code":"HTTP_REPO_BLOCKED","message":"x\nJAVA_VERSION_DEFAULTED\tforged","context":{"url":"a\tb\nc"}}]}}' "${check[@]}" scan
+  ! grep -q '^::warning' "$t/log" && has "$t/summary" 'HTTP_REPO_BLOCKED x JAVA_VERSION_DEFAULTED forged (url=a b c)' \
+    && ok "$tag: a warning stays one line" || bad "$tag: a multi-line warning"
 
   # The gate names the findings that fail the job, as the summary counts them.
   r() { printf '{"ruleId":"%s","properties":{"severity":"%s"}%s}' "$1" "$2" "${3:-}"; }

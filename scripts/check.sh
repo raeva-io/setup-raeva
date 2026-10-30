@@ -129,7 +129,7 @@ warnings() {
     [.data.warnings[]?] | group_by(.code)[]
     | (.[0].context | if type == "object" and length > 0
         then " (" + ([to_entries[] | "\(.key)=\(.value)"] | join(", ")) + ")" else "" end) as $ctx
-    | "\(.[0].code)\t\(.[0].message)\($ctx)"
+    | "\(.[0].code)\t" + ("\(.[0].message)\($ctx)" | gsub("[\r\n\t]+"; " "))
       + (if length > 1 then "; and \(length - 1) more (raeva --json \($cmd) lists them)" else "" end)
     ' "$1" 2>/dev/null) || return 0
   [[ -n "$lines" ]] || return 0

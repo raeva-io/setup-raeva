@@ -66,10 +66,6 @@ esc_msg() { local s="${1//%/%25}"; s="${s//$'\r'/%0D}"; printf '%s' "${s//$'\n'/
 esc_prop() { local s; s=$(esc_msg "$1"); s="${s//:/%3A}"; printf '%s' "${s//,/%2C}"; }
 annotate() { echo "::$1 file=$(esc_prop "$2"),title=$(esc_prop "$3")::$(esc_msg "$4")"; }
 
-# Platform names and advisory ids may hold underscores, which Markdown reads
-# as emphasis. sed, as bash versions differ on backslashes in ${v//_/...}.
-# shellcheck disable=SC2001
-escape_underscores() { sed 's/_/\\_/g' <<< "$1"; }
 # Text from raeva quotes POM and repository data, so it goes into the
 # summary inside a fence it cannot close.
 fenced() {
@@ -273,14 +269,20 @@ frozen() {
   raw cat "$run/frozen.err"
   out frozen-exit-code "$code"
   if [[ $code -eq 0 ]]; then
-    local details
-    details=$(jq -r '.data | [
-        (.resolved | numbers | "\(.) dependencies"),
-        ([.platforms[]? | strings | select(test("\\A[A-Za-z0-9_.@+-]+\\z"))] | select(length > 0) | join(", ")),
-        (.duration_ms | numbers | (. + 50) / 100 | floor | "\(. / 10 | floor).\(. % 10) s")
-      ] | join("; ")' "$json" 2>/dev/null || true)
+    # The summary quotes platform names in code spans, so Markdown cannot
+    # read them as emphasis or links.
+    local details quoted
+    frozen_details() {
+      jq -r --arg q "$1" '.data | [
+          (.resolved | numbers | "\(.) dependencies"),
+          ([.platforms[]? | strings | select(test("\\A[A-Za-z0-9_.@+-]+\\z")) | "\($q)\(.)\($q)"] | select(length > 0) | join(", ")),
+          (.duration_ms | numbers | (. + 50) / 100 | floor | "\(. / 10 | floor).\(. % 10) s")
+        ] | join("; ")' "$json" 2>/dev/null || true
+    }
+    details=$(frozen_details "")
+    quoted=$(frozen_details '`')
     echo "raeva.lock is current${details:+ ($details)}"
-    printf '### raeva\n\n`raeva.lock` is current%s.\n' "${details:+ ($(escape_underscores "$details"))}" >> "$summary"
+    printf '### raeva\n\n`raeva.lock` is current%s.\n' "${quoted:+ ($quoted)}" >> "$summary"
     warnings "$json" "sync --frozen"
     return 0
   fi
@@ -387,8 +389,8 @@ findings_table() {
 # suppressed, not in the baseline, and at the threshold or above, where an
 # unknown severity meets every threshold. Prints, for example, "2 new
 # findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
-failing_findings() { # <SARIF log> <vuln-fail-on> <"new " or empty>
-  jq -r --arg on "$2" --arg new "$3" '
+failing_findings() { # <SARIF log> <vuln-fail-on> <"new " or empty> <quote>
+  jq -r --arg on "$2" --arg new "$3" --arg q "$4" '
     def rank: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4}[tostring] // 5;
     {"any": 4, "low": 3, "medium": 2, "high": 1, "critical": 0}[$on] as $max
     | [.runs[].results[]?
@@ -398,7 +400,7 @@ failing_findings() { # <SARIF log> <vuln-fail-on> <"new " or empty>
            id: (.ruleId // "" | tostring | gsub("[^A-Za-z0-9._:-]"; "") | .[:64])}
         | select(.r == 5 or .r <= $max)]
     | length as $n
-    | [group_by(.id)[] | min_by(.r) | select(.id != "")] | sort_by(.r, .id) | map(.id) as $ids
+    | [group_by(.id)[] | min_by(.r) | select(.id != "")] | sort_by(.r, .id) | map("\($q)\(.id)\($q)") as $ids
     | select($n > 0)
     | "\($n) \($new)finding\(if $n == 1 then "" else "s" end) at or above '"'"'\($on)'"'"' ("
       + ($ids[:5] | join(", "))
@@ -468,10 +470,11 @@ vuln() {
   fi
   if [[ $code -eq 1 && "$fail_on" != never ]]; then
     local failing
-    failing=$(failing_findings "$sarif" "$fail_on" "${base_lock:+new }")
+    failing=$(failing_findings "$sarif" "$fail_on" "${base_lock:+new }" "")
     if [[ -n "$failing" ]]; then
       out vuln-failing "$failing"
-      printf '\nThe job fails on %s.\n' "$(escape_underscores "$failing")" >> "$summary"
+      # Code spans keep Markdown from reading the ids as emphasis or links.
+      printf '\nThe job fails on %s.\n' "$(failing_findings "$sarif" "$fail_on" "${base_lock:+new }" '`')" >> "$summary"
     fi
   fi
   findings_table "$sarif"

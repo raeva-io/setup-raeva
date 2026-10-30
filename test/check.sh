@@ -328,10 +328,10 @@ for tag in "${variants[@]}"; do
   for case in '25349 25.3' '25350 25.4' '49 0.0'; do
     read -r ms seconds <<< "$case"
     run env INPUT_CHECK=true INPUT_VULN=true FROZEN_CODE=0 \
-      FROZEN_JSON="{\"data\":{\"resolved\":727,\"platforms\":[\"linux-x86_64\",\"x\\n::error::y\",\"macos-aarch64\"],\"duration_ms\":$ms,\"warnings\":[]}}" "${check[@]}" scan
+      FROZEN_JSON="{\"data\":{\"resolved\":727,\"platforms\":[\"linux-x86_64\",\"x\\n::error::y\",\"www.example.com\"],\"duration_ms\":$ms,\"warnings\":[]}}" "${check[@]}" scan
     expect "$tag: a current lock passes ($ms ms)" 0 $?
-    line="raeva.lock is current (727 dependencies; linux-x86_64, macos-aarch64; $seconds s)"
-    has "$t/log" "$line" && has "$t/summary" "\`raeva.lock\` is current (727 dependencies; linux-x86\\_64, macos-aarch64; $seconds s)." \
+    line="raeva.lock is current (727 dependencies; linux-x86_64, www.example.com; $seconds s)"
+    has "$t/log" "$line" && has "$t/summary" "\`raeva.lock\` is current (727 dependencies; \`linux-x86_64\`, \`www.example.com\`; $seconds s)." \
       && ok "$tag: success names the platforms and the time ($ms ms)" || bad "$tag: success line ($ms ms)"
   done
   [[ "$(head -n 1 "$t/log")" == 'Checking raeva.lock with raeva sync --frozen; its output follows when it exits.' ]] \
@@ -394,11 +394,11 @@ for tag in "${variants[@]}"; do
 
   # The gate names the findings that fail the job, as the summary counts them.
   r() { printf '{"ruleId":"%s","properties":{"severity":"%s"}%s}' "$1" "$2" "${3:-}"; }
-  sarif="{\"runs\":[{\"results\":[$(r CVE-b High),$(r CVE-a High),$(r GHSA-c Critical),$(r GHSA-c Critical),$(r CVE-low Low),$(r CVE-unk 'Unknown (no CVSS score)'),$(r CVE-sup Critical ',"suppressions":[{"kind":"external"}]'),$(r 'bad\nid' High),$(r CVE-d High),$(r __e__ High)]}]}"
+  sarif="{\"runs\":[{\"results\":[$(r CVE-b High),$(r CVE-a High),$(r GHSA-c Critical),$(r GHSA-c Critical),$(r www.example.com Critical),$(r CVE-low Low),$(r CVE-unk 'Unknown (no CVSS score)'),$(r CVE-sup Critical ',"suppressions":[{"kind":"external"}]'),$(r 'bad\nid' High),$(r CVE-d High),$(r __e__ High)]}]}"
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
   expect "$tag: findings reach the gate" 0 $?
-  failing="8 findings at or above 'high' (GHSA-c, CVE-a, CVE-b, CVE-d, __e__, and 2 more)"
-  [[ "$(output vuln-failing)" == "$failing" ]] && has "$t/summary" 'The job fails on 8 findings at or above '"'high'"' (GHSA-c, CVE-a, CVE-b, CVE-d, \_\_e\_\_, and 2 more).' \
+  failing="9 findings at or above 'high' (GHSA-c, www.example.com, CVE-a, CVE-b, CVE-d, and 3 more)"
+  [[ "$(output vuln-failing)" == "$failing" ]] && has "$t/summary" 'The job fails on 9 findings at or above '"'high'"' (`GHSA-c`, `www.example.com`, `CVE-a`, `CVE-b`, `CVE-d`, and 3 more).' \
     && ok "$tag: the summary names the failing findings" || bad "$tag: failing findings ($(output vuln-failing))"
   run env VULN_EXIT_CODE=1 VULN_FAILING="$failing" "${check[@]}" gate
   expect "$tag: the gate fails on findings" 1 $?

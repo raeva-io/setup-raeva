@@ -278,16 +278,19 @@ function Invoke-Frozen {
         $resolved = & $field 'resolved'
         if (& $isNumber $resolved) { $parts += "$resolved dependencies" }
         $platforms = @(& $field 'platforms' | Where-Object { $_ -is [string] -and $_ -cmatch '\A[A-Za-z0-9_.@+-]+\z' })
-        if ($platforms.Count -gt 0) { $parts += $platforms -join ', ' }
+        if ($platforms.Count -gt 0) { $parts += '{0}' }
         $ms = & $field 'duration_ms'
         if (& $isNumber $ms) {
             $tenths = [math]::Floor(([double]$ms + 50) / 100)
             $parts += "$([math]::Floor($tenths / 10)).$($tenths % 10) s"
         }
+        # The summary quotes platform names in code spans, so Markdown cannot
+        # read them as emphasis or links.
         $details = if ($parts.Count -gt 0) { " ($($parts -join '; '))" } else { '' }
+        $quoted = $details.Replace('{0}', (($platforms | ForEach-Object { "``$_``" }) -join ', '))
+        $details = $details.Replace('{0}', $platforms -join ', ')
         Write-Output "raeva.lock is current$details"
-        # Platform names may hold underscores, which Markdown reads as emphasis.
-        Summary "### raeva`n`n``raeva.lock`` is current$($details.Replace('_', '\_'))."
+        Summary "### raeva`n`n``raeva.lock`` is current$quoted."
         Write-Warnings $envelope 'sync --frozen'
         return
     }
@@ -412,7 +415,7 @@ function Write-FindingsTable($Log) {
 # suppressed, not in the baseline, and at the threshold or above, where an
 # unknown severity meets every threshold. Returns, for example, "2 new
 # findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
-function Get-FailingFindings($Log, [string]$FailOn, [string]$New) {
+function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote) {
     $max = switch -CaseSensitive ($FailOn) { 'any' { 4 } 'low' { 3 } 'medium' { 2 } 'high' { 1 } 'critical' { 0 } }
     $count = 0
     $best = @{}
@@ -434,7 +437,7 @@ function Get-FailingFindings($Log, [string]$FailOn, [string]$New) {
     if ($count -eq 0) { return '' }
     $keys = [string[]]@($best.Keys | ForEach-Object { "$($best[$_])`t$_" })
     [Array]::Sort($keys, [StringComparer]::Ordinal)
-    $ids = @($keys | ForEach-Object { $_.Substring(2) })
+    $ids = @($keys | ForEach-Object { "$Quote$($_.Substring(2))$Quote" })
     $text = "$count $($New)finding$(if ($count -ne 1) { 's' }) at or above '$FailOn' (" + (($ids | Select-Object -First 5) -join ', ')
     if ($ids.Count -gt 5) { $text += ", and $($ids.Count - 5) more" }
     "$text)"
@@ -504,10 +507,12 @@ function Invoke-Vuln {
         Summary "`n``raeva vuln``: $count finding(s)$note; $gating."
     }
     if ($code -eq 1 -and $failOn -ne 'never') {
-        $failing = Get-FailingFindings $log $failOn $(if ($baseLock) { 'new ' } else { '' })
+        $new = if ($baseLock) { 'new ' } else { '' }
+        $failing = Get-FailingFindings $log $failOn $new ''
         if ($failing) {
             Out 'vuln-failing' $failing
-            Summary "`nThe job fails on $($failing.Replace('_', '\_'))."
+            # Code spans keep Markdown from reading the ids as emphasis or links.
+            Summary "`nThe job fails on $(Get-FailingFindings $log $failOn $new '`')."
         }
     }
     Write-FindingsTable $log

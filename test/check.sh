@@ -404,16 +404,18 @@ for tag in "${variants[@]}"; do
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=0 "${check[@]}" scan
   [[ -z "$(output vuln-failing)" ]] && ok "$tag: a passing scan lists no failing findings" || bad "$tag: failing list after exit 0"
 
-  # The upload is skipped only when code scanning refuses the job token.
-  for case in 'Resource not accessible by integration|skip' 'API rate limit exceeded|upload'; do
-    IFS='|' read -r message want <<< "$case"
-    run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r CS_STATUS=403 CS_MESSAGE="$message" "${check[@]}" scan
-    expect "$tag: a refused probe does not fail the scan ($message)" 0 $?
+  # The upload is skipped only when code scanning refuses the job token
+  # outside a pull_request run, which may upload with a read-only token.
+  for case in 'Resource not accessible by integration|push|skip' 'Resource not accessible by integration|pull_request|upload' \
+    'API rate limit exceeded|push|upload'; do
+    IFS='|' read -r message event want <<< "$case"
+    run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GITHUB_EVENT_NAME="$event" GITHUB_EVENT_PATH="$t/event.json" INPUT_WORKING_DIRECTORY=. CS_STATUS=403 CS_MESSAGE="$message" "${check[@]}" scan
+    expect "$tag: a refused probe does not fail the scan ($message, $event)" 0 $?
     if [[ "$want" == skip ]]; then
-      [[ -z "$(output sarif-upload)" && $(grep -c '^::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 (Resource not accessible by integration). The upload needs security-events: write' "$t/log") == 1 ]] \
+      [[ -z "$(output sarif-upload)" && $(grep -c '^::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 (Resource not accessible by integration). Outside a pull_request run, the upload needs security-events: write' "$t/log") == 1 ]] \
         && ok "$tag: a token without code scanning access skips the upload" || bad "$tag: token without access"
     else
-      [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: other 403 answers leave the upload to try" || bad "$tag: other 403"
+      [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: a 403 ($message, $event) leaves the upload to try" || bad "$tag: 403 ($message, $event)"
     fi
   done
 
@@ -540,7 +542,8 @@ LOCK
     && ok "$tag: the absent base lock is noted under the vulnerabilities heading" || bad "$tag: absent base lock note above the heading"
   for error in 403:'HTTP 403' 404:'HTTP 404' 500:'HTTP 500' transport:'request failed' \
     malformed:'unreadable blob response' empty:'raeva.lock is empty' \
-    truncated:'invalid or truncated tree response' symlink:'raeva.lock is not a regular file' blob404:'HTTP 404'; do
+    truncated:'invalid or truncated tree response' symlink:'raeva.lock is not a regular file' blob404:'HTTP 404' \
+    notjson:'invalid or truncated tree response' nosha:'invalid object SHA'; do
     why=${error#*:} error=${error%%:*}
     run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE="$error" \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan

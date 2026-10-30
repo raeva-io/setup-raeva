@@ -358,8 +358,10 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    count the findings that fail the job and name up to five of their
    advisories. An incomplete scan uploads the findings it has and fails the
    job. When code scanning answers the job token that it is not enabled, as
-   in a private repository without GitHub Code Security, or that the token
-   may not use it, the upload is skipped with one notice.
+   in a private repository without GitHub Code Security, the upload is
+   skipped with one notice. It is also skipped when the token may not use
+   code scanning, except in a `pull_request` run: code scanning takes those
+   uploads from a read-only token.
 9. With `relock: true`, runs `raeva sync` for every platform the lock
    records, also from a conflicted lock. JDK suffixes stay in the lock; keep
    `[lock] jdks` in `raeva.toml` for a JDK matrix. The action never commits

@@ -333,9 +333,9 @@ sarif_category() {
 # An upload that code scanning refuses only adds an error annotation, so ask
 # first, with the token the upload uses. A 403 that says code scanning is not
 # enabled, as for a private repository without GitHub Code Security, skips
-# the upload, and so does one that says the job token may not read alerts:
-# security-events: write would include read. Any other answer leaves the
-# upload to try.
+# the upload. So does one that says the job token may not read alerts, but
+# not in a pull_request run: code scanning takes those uploads from a
+# read-only token. Any other answer leaves the upload to try.
 sarif_upload() {
   [[ "${INPUT_SARIF_UPLOAD:-false}" == true && -n "${GITHUB_REPOSITORY:-}" ]] || return 0
   local body="$run/code-scanning.json" status why="" cause=""
@@ -346,8 +346,8 @@ sarif_upload() {
     why=$(jq -r '.message // empty' "$body" 2>/dev/null | cut -c1-200 || true)
     if grep -qiE 'must be enabled|not enabled' <<< "$why"; then
       cause="A private repository needs GitHub Code Security."
-    elif grep -qiF 'Resource not accessible by integration' <<< "$why"; then
-      cause="The upload needs security-events: write, which pull requests from forks do not get."
+    elif [[ "${GITHUB_EVENT_NAME:-}" != pull_request ]] && grep -qiF 'Resource not accessible by integration' <<< "$why"; then
+      cause="Outside a pull_request run, the upload needs security-events: write."
     fi
     if [[ -n "$cause" ]]; then
       echo "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(esc_msg "$why")). $cause The findings are in the job summary; sarif-upload: false skips this check."

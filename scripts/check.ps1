@@ -235,7 +235,8 @@ function Invoke-Proposed {
             Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
         }
         if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
-            Summary "`nThis job reads the settings file ``$($env:INPUT_SETTINGS.Replace('``', ''))``; run it with a settings file that has the same repositories and profiles."
+            $settings = $env:INPUT_SETTINGS.Replace('`', '')
+            Summary "`nThis job reads the settings file ``$settings``; run it with a settings file that has the same repositories and profiles."
         }
         $diffOut = Join-Path $runDir 'diff.out'
         $diffErr = Join-Path $runDir 'diff.err'

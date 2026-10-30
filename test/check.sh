@@ -386,6 +386,9 @@ for tag in "${variants[@]}"; do
     fi
   done
 
+  run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_SETTINGS='/w/a`b``c/settings.xml' "${check[@]}" scan
+  has "$t/summary" 'reads the settings file `/w/abc/settings.xml`;' && ok "$tag: a settings path cannot end its code span" || bad "$tag: settings path backticks"
+
   # The JDK suffix belongs to the lock and config, never to --platforms.
   cp "$t/original.lock" "$t/saved.lock"
   sed 's/^conflict //' > "$t/project/raeva.lock" <<'LOCK'

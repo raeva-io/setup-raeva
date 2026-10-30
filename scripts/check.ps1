@@ -545,8 +545,8 @@ function Read-PrBaseline {
             $part = $parts[$i]
             if ($tree -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'invalid tree SHA' }
             $data = Get-BaseJson "git/trees/$tree"
-            if ($data.truncated -ne $false -or $data.tree -isnot [array]) { throw 'invalid or truncated tree response' }
-            $entries = @($data.tree | Where-Object { $_.path -ceq $part })
+            if (Test-Fails { $data.truncated -ne $false -or $data.tree -isnot [array] }) { throw 'invalid or truncated tree response' }
+            $entries = @($data.tree | Where-Object { $_ -is [pscustomobject] -and $_.PSObject.Properties['path'] -and $_.path -ceq $part })
             if ($entries.Count -eq 0) {
                 $script:baseMissing = $true
                 Write-Host '::notice title=setup-raeva::The base commit has no raeva.lock for this root; vulnerability findings are report-only (--fail-on never). Scan errors still fail.'
@@ -554,17 +554,17 @@ function Read-PrBaseline {
             }
             if ($entries.Count -ne 1) { throw 'duplicate tree entry' }
             $entry = $entries[0]
-            if ($entry.sha -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') { throw 'invalid object SHA' }
+            if (Test-Fails { $entry.sha -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$' }) { throw 'invalid object SHA' }
             if ($i -eq $parts.Count - 1) {
-                if ($entry.type -cne 'blob' -or $entry.mode -notin @('100644', '100755')) { throw 'raeva.lock is not a regular file' }
+                if (Test-Fails { $entry.type -cne 'blob' -or $entry.mode -notin @('100644', '100755') }) { throw 'raeva.lock is not a regular file' }
                 $blob = Get-BaseJson "git/blobs/$($entry.sha)"
-                if ($blob.encoding -cne 'base64' -or $blob.content -isnot [string]) { throw 'unreadable blob response' }
+                if (Test-Fails { $blob.encoding -cne 'base64' -or $blob.content -isnot [string] }) { throw 'unreadable blob response' }
                 try { $bytes = [Convert]::FromBase64String($blob.content) } catch { throw 'unreadable blob response' }
                 if ($bytes.Length -eq 0) { throw 'raeva.lock is empty' }
                 $script:baseLock = Join-Path $runDir 'base.lock'
                 [IO.File]::WriteAllBytes($script:baseLock, $bytes)
             } else {
-                if ($entry.type -cne 'tree' -or $entry.mode -cne '040000') { throw 'a parent of raeva.lock is not a directory' }
+                if (Test-Fails { $entry.type -cne 'tree' -or $entry.mode -cne '040000' }) { throw 'a parent of raeva.lock is not a directory' }
                 $tree = $entry.sha
             }
         }

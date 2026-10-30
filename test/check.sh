@@ -88,7 +88,11 @@ if '/git/trees/' in url:
         entry = {'path': 'module', 'type': 'tree', 'mode': '040000', 'sha': '4' * 40}
     if case == 'symlink':
         entry['mode'] = '120000'
+    if case == 'nosha':
+        del entry['sha']
     body = {'tree': [] if case == 'missing' else [entry], 'truncated': case == 'truncated'}
+    if case == 'notjson':
+        body = 'not json'
 elif '/git/blobs/' in url:
     data = Path(os.environ['TEST_DIR'], 'original.lock').read_bytes()
     body = {'encoding': 'base64', 'content': base64.encodebytes(data).decode()}

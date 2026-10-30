@@ -31,7 +31,7 @@ name: raeva
 
 on:
   push:
-    branches: [main]
+    branches: [main] # your default branch: only its pushes save the raeva cache
   pull_request:
   merge_group:
     types: [checks_requested]
@@ -381,7 +381,11 @@ macOS, `%LOCALAPPDATA%\raeva` on Windows, or `$RAEVA_HOME` when it is set. It
 does not hold `config.toml` or credentials.
 
 Only pushes to the default branch save it, including the first run with an
-empty cache. Pull requests, merge queues, and scheduled runs restore it. A
+empty cache. Pull requests, merge queues, and scheduled runs restore it. The
+examples run on pushes to `main`; when your default branch is `master` or
+`develop`, put its name in `branches: [main]`, or no run saves a cache. A
+push to any other branch restores the default branch's cache and saves
+none. A
 cache that a pull request saved would serve only that pull request, and
 saving takes longer than a cold check.
 

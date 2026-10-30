@@ -5,7 +5,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main] # your default branch: only its pushes save the raeva cache
   pull_request:
   # A required check must also run in a merge queue.
   merge_group:

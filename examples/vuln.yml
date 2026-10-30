@@ -13,7 +13,7 @@ name: Vulnerabilities
 
 on:
   push:
-    branches: [main]
+    branches: [main] # your default branch: only its pushes save the raeva cache
   pull_request:
   merge_group:
     types: [checks_requested]

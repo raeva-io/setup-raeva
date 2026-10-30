@@ -168,6 +168,13 @@ global `allowedCommands`, such as `["^raeva sync$"]`.
 
 The relock workflow never pushes to main or uses `pull_request_target`.
 
+The relock job resolves the POMs, so a build that reads a private Maven
+repository needs its credentials there too. Dependabot runs see only
+Dependabot secrets: store the credentials there, and give them to raeva as
+`examples/private.yml` does, with the `actions/setup-java` `server-id`,
+`server-username-env-var`, and `server-password-env-var` inputs and the
+`settings` input of setup-raeva. Without them, relock fails with `AUTH`.
+
 ## Vulnerabilities on pull requests
 
 With `vuln: true`, a pull request scan reads `raeva.lock` from the PR base

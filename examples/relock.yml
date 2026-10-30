@@ -27,6 +27,12 @@ on:
 
 permissions: {}
 
+env:
+  # Each directory with a root pom.xml and its raeva.lock. matrix.root of the
+  # relock job lists the same roots in the same order; strategy cannot read
+  # env, and each relock leg fails when the two lists differ.
+  ROOTS: '["."]'
+
 concurrency:
   group: raeva-relock-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -45,8 +51,7 @@ jobs:
       github.actor == 'dependabot[bot]'
     strategy:
       matrix:
-        # Each directory with a root pom.xml and its raeva.lock. List the
-        # same roots, in the same order, in ROOTS of the push job.
+        # The roots of ROOTS, in the same order.
         root: ["."]
     runs-on: ubuntu-latest
     permissions:
@@ -69,7 +74,11 @@ jobs:
         env:
           ROOT: ${{ matrix.root }}
           INDEX: ${{ strategy.job-index }}
+          TOTAL: ${{ strategy.job-total }}
         run: |
+          jq -e --arg root "$ROOT" --argjson i "$INDEX" --argjson n "$TOTAL" \
+            'length == $n and .[$i] == $root' <<< "$ROOTS" > /dev/null || {
+            echo "::error::matrix.root and ROOTS must list the same roots in the same order"; exit 1; }
           out="$RUNNER_TEMP/relock/$INDEX"
           mkdir -p "$out"
           # The root's committed lock and Trusted Checksums files that relock
@@ -97,9 +106,6 @@ jobs:
     permissions:
       actions: read
       contents: write
-    env:
-      # The roots of the relock matrix, in the same order.
-      ROOTS: '["."]'
     steps:
       - id: found
         env:

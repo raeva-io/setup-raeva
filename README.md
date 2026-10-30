@@ -212,10 +212,10 @@ Use one step, or one matrix leg, per root with `working-directory`. Each
 root has its own `raeva.lock`, cache key, lock diff artifact, and SARIF log.
 The code scanning category defaults to `raeva` for the repository root and
 `raeva/<working-directory>` otherwise, so the alerts of two roots do not
-replace each other. In `examples/relock.yml`, list the roots in the
-`root` matrix and, in the same order, in `ROOTS` of the push job, which
-accepts from each relock job only that root's files. One commit carries every
-changed lock.
+replace each other. In `examples/relock.yml`, list the roots in `ROOTS` and,
+in the same order, in the `root` matrix; a relock leg fails when the two
+differ. The push job accepts from each relock job only that root's files.
+One commit carries every changed lock.
 
 ## Private repositories and forks
 

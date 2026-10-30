@@ -47,6 +47,10 @@ assert up[0]["with"]["name"] == "raeva-relock-${{ strategy.job-index }}"
 assert up[0]["with"]["path"] == "${{ steps.diff.outputs.path }}"
 assert up[0]["with"]["if-no-files-found"] == "error"
 assert jobs["push"]["permissions"]["actions"] == "read"
+import json
+wf = yaml.safe_load(open(sys.argv[1]))
+assert json.loads(wf["env"]["ROOTS"]) == jobs["relock"]["strategy"]["matrix"]["root"]
+assert "ROOTS" not in jobs["push"].get("env", {})
 found = next(s for s in jobs["push"]["steps"] if s.get("id") == "found")
 assert found["env"]["GH_TOKEN"] == "${{ github.token }}"
 assert found["env"]["GH_REPO"] == "${{ github.repository }}"
@@ -113,7 +117,8 @@ run_relock_job() { # <workdir> <root> <job index>
   : > "$1.out"
   (cd "$1" && env RAEVA_BIN="$RAEVA_BUILD" INPUT_WORKING_DIRECTORY="$2" GITHUB_OUTPUT="$1.out" RUNNER_TEMP="$1.temp" \
     bash "$here/scripts/check.sh" relock > "$1.log" 2>&1 &&
-    env ROOT="$2" INDEX="$3" RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" bash -e "$t/diff.sh" >> "$1.log" 2>&1)
+    env ROOTS='[".", "services/api"]' TOTAL=2 ROOT="$2" INDEX="$3" RUNNER_TEMP="$1.temp" GITHUB_OUTPUT="$1.out" \
+      bash -e "$t/diff.sh" >> "$1.log" 2>&1)
 }
 run_push_job() { # <workdir> <uploaded file, artifact directory, or ->...
   local dir="$1" i=0 source
@@ -308,6 +313,18 @@ run_push_job "$t/push-evil2" "$t/evil2/relock.tar" "$unchanged"
 code=$?
 [[ $code -ne 0 ]] && grep -q "not a regular file" "$t/push-evil2.log" && ok "refuses a symlink in the artifact" || bad "refuses a symlink in the artifact (exit $code)"
 
+# A relock leg fails when matrix.root and ROOTS differ, where the push job
+# would ignore the extra artifact.
+for case in '["."]|1|services/api|2' '["services/api", "."]|0|.|2'; do
+  IFS='|' read -r roots index root total <<< "$case"
+  mkdir -p "$t/mismatch.temp"
+  (cd "$t/after" && env ROOTS="$roots" TOTAL="$total" ROOT="$root" INDEX="$index" RUNNER_TEMP="$t/mismatch.temp" \
+    GITHUB_OUTPUT=/dev/null bash -e "$t/diff.sh" > "$t/mismatch.log" 2>&1)
+  code=$?
+  [[ $code -ne 0 ]] && grep -q '::error::matrix.root and ROOTS must list the same roots' "$t/mismatch.log" \
+    && [[ ! -e "$t/mismatch.temp/relock" ]] && ok "a leg fails when ROOTS is $roots" || bad "ROOTS $roots (exit $code)"
+done
+
 # A committed checksum file with no changes must stay out of the tar.
 git clone --quiet "$t/remote.git" "$t/diff-checksums"
 git -C "$t/diff-checksums" checkout --quiet "$head_sha"
@@ -315,8 +332,8 @@ mkdir -p "$t/diff-checksums/.mvn/checksums" "$t/diff-checksums.temp"
 printf 'x\n' > "$t/diff-checksums/.mvn/checksums/checksums.sha256"
 (cd "$t/diff-checksums" && git add .mvn/checksums/checksums.sha256 && git -c user.name=dev -c user.email=dev@example.com commit --quiet -m "Add checksums")
 cp "$t/after/raeva.lock" "$t/diff-checksums/"
-(cd "$t/diff-checksums" && env ROOT=. INDEX=0 RUNNER_TEMP="$t/diff-checksums.temp" GITHUB_OUTPUT="$t/diff-checksums.out" \
-  bash -e "$t/diff.sh" > "$t/diff-checksums.log" 2>&1)
+(cd "$t/diff-checksums" && env ROOTS='["."]' TOTAL=1 ROOT=. INDEX=0 RUNNER_TEMP="$t/diff-checksums.temp" \
+  GITHUB_OUTPUT="$t/diff-checksums.out" bash -e "$t/diff.sh" > "$t/diff-checksums.log" 2>&1)
 code=$?
 [[ $code -eq 0 ]] && [[ "$(tar -tf "$t/diff-checksums.temp/relock/0/relock.tar")" == raeva.lock ]] \
   && ok "archives only files that changed" || bad "archives only files that changed (exit $code)"

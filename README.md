@@ -412,7 +412,9 @@ starts from an empty cache.
   `raeva sync` in the working directory. The step puts the committed lock
   back before it ends.
 - In `examples/relock.yml`, the push job gives git its token through the
-  environment, not the command line.
+  environment, not the command line, and only for the push. It writes only
+  the bytes of each lock, so an artifact cannot change a file's mode, and
+  the push refuses a branch that moved or was deleted during the run.
 - The SARIF upload needs `security-events: write`, and in a private
   repository also `actions: read` and GitHub Code Security. A refused upload
   logs an error but does not fail the job; findings still fail it.

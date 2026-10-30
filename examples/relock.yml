@@ -161,6 +161,9 @@ jobs:
           TOKEN: ${{ steps.app.outputs.token || secrets.RELOCK_TOKEN || github.token }}
         run: |
           set -euo pipefail
+          # Only the push sees the token, not git filters run by add or commit.
+          token="$TOKEN"
+          unset TOKEN
           : "${ROOTS:?set ROOTS}"
           mapfile -t roots < <(jq -r '.[]' <<< "$ROOTS")
           # The artifacts were written by jobs that processed network data.
@@ -193,16 +196,15 @@ jobs:
                 100644|100755) ;;
                 *) echo "::error::$name is not a committed file of this branch"; exit 1 ;;
               esac
+              # Only the bytes: the file keeps its mode and stays a file.
+              [[ -f "$name" && ! -L "$name" ]] || { echo "::error::$name is not a regular file"; exit 1; }
+              tar -xOf "$archive" "$name" > "$name"
+              if git diff --quiet HEAD -- "$name"; then
+                echo "::error::$name claims a change but matches HEAD"
+                exit 1
+              fi
               files+=("$name")
             done < <(paste <(printf '%s\n' "$types") <(printf '%s\n' "$names"))
-            tar -xf "$archive" --no-same-owner --no-same-permissions
-          done
-          for name in "${files[@]}"; do
-            [[ -f "$name" && ! -L "$name" ]] || { echo "::error::$name is not a regular file"; exit 1; }
-            if git diff --quiet HEAD -- "$name"; then
-              echo "::error::$name claims a change but matches HEAD"
-              exit 1
-            fi
           done
           [[ ${#files[@]} -gt 0 ]] || { echo "::error::No files changed"; exit 1; }
           git add -- "${files[@]}"
@@ -211,17 +213,20 @@ jobs:
               commit --quiet -m 'Update raeva.lock [dependabot skip]'
           # The credential goes to git through its environment, not its
           # arguments.
-          basic=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          basic=$(printf 'x-access-token:%s' "$token" | base64 -w0)
           echo "::add-mask::$basic"
-          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader"
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
-          if ! git push --quiet origin "HEAD:refs/heads/$HEAD_REF"; then
-            # A fast-forward push fails when the bot pushed again. That push
-            # starts a new relock run, so this one stops without an error.
-            # An empty answer means the remote could not be read, not a race.
-            remote=$(git ls-remote origin "refs/heads/$HEAD_REF" | cut -f1)
-            if [[ -n "$remote" && "$remote" != "$HEAD_SHA" ]]; then
-              echo "::notice::$HEAD_REF moved since this run started; the newer run relocks it"
+          # The lease refuses a branch that moved or was deleted, as when the
+          # pull request merged, instead of creating it again.
+          if ! git push --quiet --force-with-lease="refs/heads/$HEAD_REF:$HEAD_SHA" origin "HEAD:refs/heads/$HEAD_REF"; then
+            # When the bot pushed again, that push starts a new relock run, so
+            # this one stops without an error. ls-remote exits 2 when the
+            # branch is gone, and 128 when the remote cannot be read.
+            code=0
+            remote=$(git ls-remote --exit-code origin "refs/heads/$HEAD_REF" | cut -f1) || code=$?
+            if [[ $code -eq 2 || ( $code -eq 0 && "$remote" != "$HEAD_SHA" ) ]]; then
+              echo "::notice::$HEAD_REF moved or was deleted since this run started; there is nothing to relock here"
               exit 0
             fi
             exit 1

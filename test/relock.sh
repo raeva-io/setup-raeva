@@ -139,8 +139,11 @@ run_push_job() { # <workdir> <uploaded file, artifact directory, or ->...
   if grep -q '^any=true$' "$dir.out"; then
     git clone --quiet "$t/remote.git" "$dir" && git -C "$dir" checkout --quiet "$head_sha" || return 1
     [[ -z "${BROKEN_ORIGIN:-}" ]] || git -C "$dir" remote set-url origin "$t/missing.git"
+    [[ -z "${DELETE_BRANCH:-}" ]] || git -C "$t/remote.git" update-ref -d "refs/heads/$branch"
+    # The commit hook records what git add and commit run with.
+    printf '#!/bin/sh\nenv > "%s"\n' "$dir.commit-env" > "$dir/.git/hooks/pre-commit" && chmod +x "$dir/.git/hooks/pre-commit"
     (cd "$dir" && env ROOTS="${TEST_ROOTS:-[\".\", \"services/api/\"]}" HEAD_REF="$branch" HEAD_SHA="$head_sha" \
-      TOKEN=not-a-real-token RUNNER_TEMP="$dir.temp" bash -e "$t/push.sh" >> "$dir.log" 2>&1)
+      TOKEN=not-a-real-token GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$dir.temp" bash -e "$t/push.sh" >> "$dir.log" 2>&1)
   fi
 }
 
@@ -163,6 +166,8 @@ code=$?
 [[ $code -eq 0 ]] && ok "push job succeeds" || { bad "push job succeeds (exit $code)"; cat "$t/push.log"; }
 git clone --quiet --branch "$branch" "$t/remote.git" "$t/after"
 [[ "$(git -C "$t/after" log -1 --format=%s)" == "Update raeva.lock [dependabot skip]" ]] && ok "commit message lets Dependabot rebase" || bad "commit message"
+[[ -s "$t/push.commit-env" ]] && ! grep -q not-a-real-token "$t/push.commit-env" \
+  && ok "git commit runs without the token" || bad "git commit runs without the token"
 [[ "$(git -C "$t/after" diff --name-only HEAD~1 HEAD | tr '\n' ' ')" == "raeva.lock services/api/raeva.lock " ]] && ok "one commit changes both locks and nothing else" || bad "one commit changes both locks and nothing else"
 [[ "$(git -C "$t/after" log -1 --format=%ae)" == "41898282+github-actions[bot]@users.noreply.github.com" ]] && ok "commit author is github-actions[bot]" || bad "commit author"
 (cd "$t/after" && "$RAEVA_BUILD" -q sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "branch passes --frozen for every platform" || bad "branch passes --frozen for every platform"
@@ -210,12 +215,31 @@ git -C "$t/dev" -c user.name=dev -c user.email=dev@example.com commit --quiet --
 git -C "$t/dev" push --quiet origin "$branch"
 run_push_job "$t/push-again" "$root_tar" "$unchanged"
 code=$?
-[[ $code -eq 0 ]] && grep -q "moved since this run started" "$t/push-again.log" && ok "a lost push race ends without an error" || { bad "a lost push race ends without an error (exit $code)"; cat "$t/push-again.log"; }
+[[ $code -eq 0 ]] && grep -q "moved or was deleted since this run started" "$t/push-again.log" && ok "a lost push race ends without an error" || { bad "a lost push race ends without an error (exit $code)"; cat "$t/push-again.log"; }
 
 BROKEN_ORIGIN=1 run_push_job "$t/push-broken" "$root_tar" "$unchanged"
 code=$?
-[[ $code -ne 0 ]] && ! grep -q "moved since this run started" "$t/push-broken.log" \
+[[ $code -ne 0 ]] && ! grep -q "since this run started" "$t/push-broken.log" \
   && ok "an unreachable remote fails the push job" || bad "an unreachable remote fails the push job (exit $code)"
+
+# A branch deleted during the run, as when the pull request merged, stays
+# deleted.
+moved=$(git -C "$t/remote.git" rev-parse "refs/heads/$branch")
+DELETE_BRANCH=1 run_push_job "$t/push-deleted" "$root_tar" "$unchanged"
+code=$?
+[[ $code -eq 0 ]] && grep -q "moved or was deleted since this run started" "$t/push-deleted.log" \
+  && ! git -C "$t/remote.git" rev-parse --verify --quiet "refs/heads/$branch" > /dev/null \
+  && ok "a deleted branch is not pushed again" || { bad "a deleted branch is not pushed again (exit $code)"; cat "$t/push-deleted.log"; }
+
+# An archive cannot change the mode of a lock.
+git -C "$t/remote.git" update-ref "refs/heads/$branch" "$head_sha"
+mkdir -p "$t/evil-mode" && tar -xf "$root_tar" -C "$t/evil-mode" && chmod 0755 "$t/evil-mode/raeva.lock"
+tar -cf "$t/evil-mode/relock.tar" -C "$t/evil-mode" raeva.lock
+run_push_job "$t/push-mode" "$t/evil-mode/relock.tar" "$unchanged"
+code=$?
+[[ $code -eq 0 && "$(git -C "$t/remote.git" ls-tree "refs/heads/$branch" raeva.lock | cut -d' ' -f1)" == 100644 ]] \
+  && ok "the lock keeps its mode" || { bad "the lock keeps its mode (exit $code)"; cat "$t/push-mode.log"; }
+git -C "$t/remote.git" update-ref "refs/heads/$branch" "$moved"
 
 run_push_job "$t/push-missing" "$unchanged" -
 code=$?

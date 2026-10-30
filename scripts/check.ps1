@@ -519,7 +519,8 @@ function Get-BaseJson([string]$Path) {
         -Uri "$api/repos/$env:GITHUB_REPOSITORY/$Path" `
         -Headers @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json' }
     if ([int]$response.StatusCode -ne 200) { throw "HTTP $($response.StatusCode) (the job needs contents: read)" }
-    $response.Content | ConvertFrom-Json
+    # Malformed JSON fails the shape checks of the caller, as in check.sh.
+    try { $response.Content | ConvertFrom-Json } catch { $null }
 }
 # A merge queue checks the group against its base commit, as a pull
 # request is checked against its base branch.
@@ -554,7 +555,7 @@ function Read-PrBaseline {
                 if ($entry.type -cne 'blob' -or $entry.mode -notin @('100644', '100755')) { throw 'raeva.lock is not a regular file' }
                 $blob = Get-BaseJson "git/blobs/$($entry.sha)"
                 if ($blob.encoding -cne 'base64' -or $blob.content -isnot [string]) { throw 'unreadable blob response' }
-                $bytes = [Convert]::FromBase64String($blob.content)
+                try { $bytes = [Convert]::FromBase64String($blob.content) } catch { throw 'unreadable blob response' }
                 if ($bytes.Length -eq 0) { throw 'raeva.lock is empty' }
                 $script:baseLock = Join-Path $runDir 'base.lock'
                 [IO.File]::WriteAllBytes($script:baseLock, $bytes)
@@ -564,8 +565,9 @@ function Read-PrBaseline {
             }
         }
     } catch {
-        # Do not echo response bodies or exceptions, which may contain headers.
-        Write-Host '::error title=setup-raeva::cannot read the vulnerability baseline of the base commit; check contents: read, the base SHA, and the lock path'
+        # Name only the reasons thrown above: other exceptions may contain headers or response bodies.
+        $why = if ($_.Exception -is [Management.Automation.RuntimeException] -and $_.Exception.WasThrownFromThrowStatement) { $_.Exception.Message } else { 'request failed' }
+        Write-Host "::error title=setup-raeva::cannot read the vulnerability baseline of the base commit; $why"
         exit 2
     }
 }

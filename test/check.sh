@@ -504,7 +504,7 @@ LOCK
     run env -C "$t/project" INPUT_VULN=true INPUT_WORKING_DIRECTORY="$root" \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
     expect "$tag: $root has no baseline" 2 $?
-    ! has "$t/args" --baseline && { [[ "$tag" != bash ]] || has "$t/log" "must be a path inside the repository"; } \
+    ! has "$t/args" --baseline && has "$t/log" "must be a path inside the repository" \
       && ok "$tag: $root reads no baseline" || bad "$tag: $root reads no baseline"
   done
 
@@ -538,10 +538,14 @@ LOCK
     && [[ "$(output vuln-exit-code)" == 4 ]] && ok "$tag: absent lock reports only and keeps scan errors" || bad "$tag: absent lock"
   awk '/^### Vulnerabilities/ { heading = 1 } /base commit has no/ { exit !heading }' "$t/summary" \
     && ok "$tag: the absent base lock is noted under the vulnerabilities heading" || bad "$tag: absent base lock note above the heading"
-  for error in 403 404 500 transport malformed empty truncated symlink blob404; do
+  for error in 403:'HTTP 403' 404:'HTTP 404' 500:'HTTP 500' transport:'request failed' \
+    malformed:'unreadable blob response' empty:'raeva.lock is empty' \
+    truncated:'invalid or truncated tree response' symlink:'raeva.lock is not a regular file' blob404:'HTTP 404'; do
+    why=${error#*:} error=${error%%:*}
     run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. API_CASE="$error" \
       GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
     expect "$tag: baseline $error fails" 2 $?
+    has "$t/log" "base commit; $why" && ok "$tag: baseline $error names the reason" || bad "$tag: baseline $error reason"
     [[ ! -s "$t/args" ]] && ok "$tag: baseline $error never scans without a baseline" || bad "$tag: baseline $error scanned"
   done
   run env INPUT_VULN=true INPUT_WORKING_DIRECTORY=. BASELINE_INVALID=1 \

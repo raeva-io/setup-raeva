@@ -175,6 +175,54 @@ Dependabot secrets: store the credentials there, and give them to raeva as
 `server-username-env-var`, and `server-password-env-var` inputs and the
 `settings` input of setup-raeva. Without them, relock fails with `AUTH`.
 
+## Dependency updates
+
+Dependabot updates the `uses:` line of setup-raeva, but not its `version`
+input. Renovate updates `version` with a regex manager in `renovate.json`:
+
+```json
+{
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "uses: raeva-io/setup-raeva@[^\\n]+\\n[ \\t]+with:[ \\t]*\\n(?:[ \\t]+[a-z-]+:[^\\n]*\\n)*?[ \\t]+version:[ \\t]*\"?(?<currentValue>\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "raeva-io/raeva",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    }
+  ]
+}
+```
+
+Every Maven update rewrites `raeva.lock`, so once one Dependabot pull
+request merges, the others conflict in the lock. Group the Maven updates in
+`.github/dependabot.yml`, so that one pull request per run carries them:
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      maven:
+        patterns: ["*"]
+```
+
+With Tier 1 or 2, Dependabot rebases a conflicted branch and the relock
+workflow writes the lock again. With Tier 3, a maintainer's lock commit
+stops Dependabot from rebasing that branch, so fewer pull requests mean
+fewer locks to write by hand.
+
+With `check-mode: report-only`, the check on a bot pull request passes with
+a stale lock. Merging it puts the stale lock on the default branch, where
+the report-only check passes too. Switch to `blocking` once a relock tier
+writes the lock on bot pull requests.
+
 ## Vulnerabilities on pull requests
 
 With `vuln: true`, a pull request scan reads `raeva.lock` from the PR base

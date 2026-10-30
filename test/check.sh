@@ -218,6 +218,37 @@ cp "$here/action.yml" "$t/broken/action.yml"
 python3 -I "$t/steps.py" "$t/broken" > "$t/log" 2>&1 && bad "an output no script writes is caught" || ok "an output no script writes is caught"
 rm -rf "${t:?}/broken"
 
+# Every example pins setup-raeva the same way, and every other action by a
+# commit SHA with its version in a comment. The README's Renovate manager
+# finds the version input of each setup-raeva step.
+cat > "$t/pins.py" <<'PY'
+import json, re, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+files = [root / 'README.md', root / 'action.yml', *sorted((root / 'examples').glob('*.yml'))]
+readme = (root / 'README.md').read_text()
+manager = json.loads(readme.split('```json\n')[1].split('```')[0])['customManagers'][0]
+version = re.compile(manager['matchStrings'][0].replace('(?<', '(?P<'))
+errors, own = [], set()
+for f in files:
+    text = f.read_text()
+    steps = 0
+    for name, ref in re.findall(r'(?m)^[ -]*uses: ([^@\s]+)@(.*)$', text):
+        if name == 'raeva-io/setup-raeva':
+            own.add(ref)
+            steps += 1
+        elif not re.fullmatch(r'[0-9a-f]{40} # v\d+(\.\d+)*', ref):
+            errors.append(f'{f.name}: {name}@{ref} is not pinned by SHA')
+    found = [m['currentValue'] for m in version.finditer(text)]
+    if found != ['0.5.0'] * steps:
+        errors.append(f'{f.name}: the Renovate manager finds {found} in {steps} steps')
+if len(own) != 1 or not re.fullmatch(r'v\d+\.\d+\.\d+|(?!0{40})[0-9a-f]{40} # v\d+\.\d+\.\d+', next(iter(own))):
+    errors.append(f'setup-raeva refs: {sorted(own)}')
+print('\n'.join(errors))
+sys.exit(1 if errors else 0)
+PY
+python3 -I "$t/pins.py" "$here" > "$t/log" 2>&1 && ok "examples pin actions and the Renovate manager finds every version" || bad "action pins"
+
 # Every tool on PATH but jq.
 mkdir -p "$t/nojq"
 IFS=: read -ra dirs <<< "$PATH"

@@ -214,19 +214,21 @@ jobs:
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit --quiet -m 'Update raeva.lock [dependabot skip]'
           # The credential goes to git through its environment, not its
-          # arguments.
+          # arguments, and only to the two git commands that need it.
           basic=$(printf 'x-access-token:%s' "$token" | base64 -w0)
           echo "::add-mask::$basic"
-          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader"
-          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          auth_git() {
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" git "$@"
+          }
           # The lease refuses a branch that moved or was deleted, as when the
           # pull request merged, instead of creating it again.
-          if ! git push --quiet --force-with-lease="refs/heads/$HEAD_REF:$HEAD_SHA" origin "HEAD:refs/heads/$HEAD_REF"; then
+          if ! auth_git push --quiet --force-with-lease="refs/heads/$HEAD_REF:$HEAD_SHA" origin "HEAD:refs/heads/$HEAD_REF"; then
             # When the bot pushed again, that push starts a new relock run, so
             # this one stops without an error. ls-remote exits 2 when the
             # branch is gone, and 128 when the remote cannot be read.
             code=0
-            remote=$(git ls-remote --exit-code origin "refs/heads/$HEAD_REF" | cut -f1) || code=$?
+            remote=$(auth_git ls-remote --exit-code origin "refs/heads/$HEAD_REF" | cut -f1) || code=$?
             if [[ $code -eq 2 || ( $code -eq 0 && "$remote" != "$HEAD_SHA" ) ]]; then
               echo "::notice::$HEAD_REF moved or was deleted since this run started; there is nothing to relock here"
               exit 0

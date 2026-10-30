@@ -75,6 +75,11 @@ printf '%s\n' "$5" >> "$ARTIFACT_STORE/requests"
 cp -a "$ARTIFACT_STORE/$5/." "$7/"
 SH
 chmod +x "$t/bin/gh"
+# cut records the environment it runs with, as every tool in the push step
+# but git would.
+mkdir -p "$t/spy"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nenv >> "$SPY_ENV"\nexec %s "$@"\n' "$(command -v cut)" > "$t/spy/cut" && chmod +x "$t/spy/cut"
 upload_artifact() { # <store> <name> <uploaded file>
   mkdir -p "$1/$2" && cp "$3" "$1/$2/"
 }
@@ -142,7 +147,7 @@ run_push_job() { # <workdir> <uploaded file, artifact directory, or ->...
     [[ -z "${DELETE_BRANCH:-}" ]] || git -C "$t/remote.git" update-ref -d "refs/heads/$branch"
     # The commit hook records what git add and commit run with.
     printf '#!/bin/sh\nenv > "%s"\n' "$dir.commit-env" > "$dir/.git/hooks/pre-commit" && chmod +x "$dir/.git/hooks/pre-commit"
-    (cd "$dir" && env ROOTS="${TEST_ROOTS:-[\".\", \"services/api/\"]}" HEAD_REF="$branch" HEAD_SHA="$head_sha" \
+    (cd "$dir" && env PATH="$t/spy:$PATH" SPY_ENV="$dir.spy-env" ROOTS="${TEST_ROOTS:-[\".\", \"services/api/\"]}" HEAD_REF="$branch" HEAD_SHA="$head_sha" \
       TOKEN=not-a-real-token GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$dir.temp" bash -e "$t/push.sh" >> "$dir.log" 2>&1)
   fi
 }
@@ -216,6 +221,8 @@ git -C "$t/dev" push --quiet origin "$branch"
 run_push_job "$t/push-again" "$root_tar" "$unchanged"
 code=$?
 [[ $code -eq 0 ]] && grep -q "moved or was deleted since this run started" "$t/push-again.log" && ok "a lost push race ends without an error" || { bad "a lost push race ends without an error (exit $code)"; cat "$t/push-again.log"; }
+grep -q '^HEAD_REF=' "$t/push-again.spy-env" && ! grep -q 'GIT_CONFIG_VALUE_0\|not-a-real-token' "$t/push-again.spy-env" \
+  && ok "only git sees the push credential" || bad "only git sees the push credential"
 
 BROKEN_ORIGIN=1 run_push_job "$t/push-broken" "$root_tar" "$unchanged"
 code=$?

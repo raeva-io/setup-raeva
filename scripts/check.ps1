@@ -286,7 +286,8 @@ function Invoke-Frozen {
         }
         $details = if ($parts.Count -gt 0) { " ($($parts -join '; '))" } else { '' }
         Write-Output "raeva.lock is current$details"
-        Summary "### raeva`n`n``raeva.lock`` is current$details."
+        # Platform names may hold underscores, which Markdown reads as emphasis.
+        Summary "### raeva`n`n``raeva.lock`` is current$($details.Replace('_', '\_'))."
         Write-Warnings $envelope 'sync --frozen'
         return
     }
@@ -506,13 +507,16 @@ function Invoke-Vuln {
         $failing = Get-FailingFindings $log $failOn $(if ($baseLock) { 'new ' } else { '' })
         if ($failing) {
             Out 'vuln-failing' $failing
-            Summary "`nThe job fails on $failing."
+            Summary "`nThe job fails on $($failing.Replace('_', '\_'))."
         }
     }
     Write-FindingsTable $log
     Test-SarifUpload
 }
 
+# StrictMode throws on a missing property; here a missing one fails the
+# check, as in check.sh.
+function Test-Fails([scriptblock]$Check) { try { & $Check } catch { $true } }
 # Read Git objects as data, without checking out or running the base tree.
 function Get-BaseJson([string]$Path) {
     $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -MaximumRedirection 0 `

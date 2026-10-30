@@ -66,6 +66,10 @@ esc_msg() { local s="${1//%/%25}"; s="${s//$'\r'/%0D}"; printf '%s' "${s//$'\n'/
 esc_prop() { local s; s=$(esc_msg "$1"); s="${s//:/%3A}"; printf '%s' "${s//,/%2C}"; }
 annotate() { echo "::$1 file=$(esc_prop "$2"),title=$(esc_prop "$3")::$(esc_msg "$4")"; }
 
+# Platform names and advisory ids may hold underscores, which Markdown reads
+# as emphasis. sed, as bash versions differ on backslashes in ${v//_/...}.
+# shellcheck disable=SC2001
+escape_underscores() { sed 's/_/\\_/g' <<< "$1"; }
 # Text from raeva quotes POM and repository data, so it goes into the
 # summary inside a fence it cannot close.
 fenced() {
@@ -276,7 +280,7 @@ frozen() {
         (.duration_ms | numbers | (. + 50) / 100 | floor | "\(. / 10 | floor).\(. % 10) s")
       ] | join("; ")' "$json" 2>/dev/null || true)
     echo "raeva.lock is current${details:+ ($details)}"
-    printf '### raeva\n\n`raeva.lock` is current%s.\n' "${details:+ ($details)}" >> "$summary"
+    printf '### raeva\n\n`raeva.lock` is current%s.\n' "${details:+ ($(escape_underscores "$details"))}" >> "$summary"
     warnings "$json" "sync --frozen"
     return 0
   fi
@@ -467,7 +471,7 @@ vuln() {
     failing=$(failing_findings "$sarif" "$fail_on" "${base_lock:+new }")
     if [[ -n "$failing" ]]; then
       out vuln-failing "$failing"
-      printf '\nThe job fails on %s.\n' "$failing" >> "$summary"
+      printf '\nThe job fails on %s.\n' "$(escape_underscores "$failing")" >> "$summary"
     fi
   fi
   findings_table "$sarif"

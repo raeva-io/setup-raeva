@@ -137,11 +137,12 @@ There are three ways to get the lock commit:
 - **Tier 1: `examples/relock.yml` with an App token or a fine-grained
   token.** The workflow writes the lock and pushes it as a second commit,
   `Update raeva.lock [dependabot skip]`, and CI runs on it at once. This is
-  the only unattended setup, and it is for Dependabot. Create a GitHub App
-  with Contents read and write, install it on the repository, and store its
-  client ID as the variable `RELOCK_APP_CLIENT_ID` and its private key as the
-  secret `RELOCK_APP_PRIVATE_KEY`. A fine-grained token with Contents read and
-  write on the repository, stored as the secret `RELOCK_TOKEN`, works too.
+  the only unattended setup, for Dependabot and, as below, hosted Renovate.
+  Create a GitHub App with Contents read and write, install it on the
+  repository, and store its client ID as the variable `RELOCK_APP_CLIENT_ID`
+  and its private key as the secret `RELOCK_APP_PRIVATE_KEY`. A fine-grained
+  token with Contents read and write on the repository, stored as the secret
+  `RELOCK_TOKEN`, works too.
   Dependabot runs see only Dependabot secrets, so store the secret there as
   well.
 - **Tier 2: `examples/relock.yml` with the default token.** The lock commit
@@ -158,15 +159,17 @@ There are three ways to get the lock commit:
 branch conflicts after another pull request merged, Dependabot rebases its own
 commit, drops the lock commit, and the workflow writes the lock again.
 
-Hosted Renovate (the Mend app) stays at Tier 3 for now. It stops rebasing a
-branch that has another author's commit. Its `gitIgnoredAuthors` setting with
-the lock commit's author,
-`["41898282+github-actions[bot]@users.noreply.github.com"]`, should let it
-keep rebasing, but that is not yet verified through a conflict and a rebase,
-so `relock.yml` runs only for Dependabot. A self-hosted Renovate writes the
-lock itself with `postUpgradeTasks`, as in `examples/renovate-self-hosted.json`;
-its admin installs raeva on the Renovate host and allows the command in the
-global `allowedCommands`, such as `["^raeva sync$"]`.
+Hosted Renovate (the Mend app) stops rebasing a branch that has another
+author's commit. With the lock commit's author in its `gitIgnoredAuthors`
+setting, `["41898282+github-actions[bot]@users.noreply.github.com"]`, it keeps
+rebasing: after a conflict it rebases its own commit, drops the lock commit,
+and the workflow writes the lock again. `relock.yml` runs only for
+Dependabot; to relock Renovate's pull requests too, set `gitIgnoredAuthors`
+and accept `renovate[bot]` in the relock job's `if:`. A self-hosted Renovate
+writes the lock itself with `postUpgradeTasks`, as in
+`examples/renovate-self-hosted.json`; its admin installs raeva on the Renovate
+host and allows the command in the global `allowedCommands`, such as
+`["^raeva sync$"]`.
 
 The relock workflow never pushes to main or uses `pull_request_target`.
 

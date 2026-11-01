@@ -44,8 +44,8 @@ jobs:
     # PR, a PR opened by a person, and a push by anyone else to a bot branch
     # are all skipped. The paths filter sees the whole pull request, so the
     # lock commit starts this workflow again; this condition skips it.
-    # Hosted Renovate is left out until its gitIgnoredAuthors setting is
-    # verified (README, "Bot pull requests").
+    # For hosted Renovate too, accept renovate[bot] here and set its
+    # gitIgnoredAuthors (README, "Bot pull requests").
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == github.actor &&

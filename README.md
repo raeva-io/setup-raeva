@@ -145,10 +145,12 @@ There are three ways to get the lock commit:
   Dependabot runs see only Dependabot secrets, so store the secret there as
   well.
 - **Tier 2: `examples/relock.yml` with the default token.** The lock commit
-  arrives by itself, but GitHub starts no workflow for a push with
-  `GITHUB_TOKEN` without approval: the CI runs of the lock commit wait as
-  `action_required` until someone with write access clicks "Approve and run".
-  That happens once per relock, and again after each Dependabot rebase.
+  arrives by itself. GitHub creates the runs of a commit pushed with
+  `GITHUB_TOKEN` but does not start them: they wait as `action_required` until
+  someone with write access clicks "Approve and run". That happens once per
+  relock, and again after each Dependabot rebase. Approve only the runs of
+  the branch's latest commit: an approved Relock run of an older commit
+  cancels the running one, as both are in one concurrency group.
 - **Tier 3: no relock workflow.** A maintainer checks out the branch, runs
   `raeva sync`, and pushes `raeva.lock`.
 
@@ -441,9 +443,8 @@ Only pushes to the default branch save it, including the first run with an
 empty cache. Pull requests, merge queues, and scheduled runs restore it. The
 examples run on pushes to `main`; when your default branch is `master` or
 `develop`, put its name in `branches: [main]`, or no run saves a cache. A
-push to any other branch restores the default branch's cache and saves
-none. A
-cache that a pull request saved would serve only that pull request, and
+push to any other branch restores the default branch's cache and saves none.
+A cache that a pull request saved would serve only that pull request, and
 saving takes longer than a cold check.
 
 raeva re-hashes a stored file against its pin before `export-m2` copies it,

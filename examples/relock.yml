@@ -5,9 +5,10 @@
 # - Tier 1: this workflow with a GitHub App token or a fine-grained personal
 #   access token. CI runs on the lock commit at once, with no one to approve
 #   it.
-# - Tier 2: this workflow with the default token. GitHub holds the CI runs of
-#   the lock commit until someone with write access clicks "Approve and run",
-#   once per relock and again after each Dependabot rebase.
+# - Tier 2: this workflow with the default token. GitHub creates the runs of
+#   the lock commit as action_required and starts them when someone with
+#   write access clicks "Approve and run", once per relock and again after
+#   each Dependabot rebase. Approve only the branch's latest commit.
 # - Tier 3: no workflow. A maintainer runs `raeva sync` on the branch. The
 #   failed check's job summary shows the lock it would write.
 #

@@ -27,11 +27,11 @@ $tmpRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempP
 if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Fail "repository must be OWNER/NAME, got '$repo'" }
 if ($verify -notin @('attestation', 'sha256')) { Fail "verify must be 'attestation' or 'sha256', got '$verify'" }
 
-function Get-File([string]$Url, [string]$Path) {
+function Get-File([string]$Url, [string]$Path, [int]$Retries = 3) {
     if ($Url.StartsWith('file://')) {
         Copy-Item -LiteralPath ([Uri]$Url).LocalPath -Destination $Path
     } elseif ($Url.StartsWith('https://')) {
-        Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount 3 -RetryIntervalSec 2 -UseBasicParsing
+        Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount $Retries -RetryIntervalSec 2 -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -UseBasicParsing
     } else {
         Fail "download URLs must use https, got '$Url'"
     }
@@ -39,8 +39,16 @@ function Get-File([string]$Url, [string]$Path) {
 
 if ($version -eq 'latest') {
     if ($baseUrl) { Fail "version 'latest' needs the GitHub release host; set an exact version with download-base-url" }
-    $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -Method Head -UseBasicParsing
-    $version = ($response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -split '/tag/v')[-1]
+    try {
+        $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -Method Head -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -UseBasicParsing
+        $version = ($response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -split '/tag/v')[-1]
+    } catch {
+        # A private repository answers 404 without the token.
+        if (-not $env:GH_TOKEN -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail "cannot resolve the latest release of $repo" }
+        $tagName = & gh release view --repo $repo --json tagName --jq .tagName
+        if ($LASTEXITCODE -ne 0) { Fail "cannot resolve the latest release of $repo" }
+        $version = "$tagName" -replace '^v', ''
+    }
     Write-Output "::notice title=setup-raeva::version 'latest' resolved to $version; pin it to make runs repeatable"
 }
 if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$') { Fail "version must be X.Y.Z or 'latest', got '$version'" }
@@ -61,50 +69,63 @@ $target = switch ("$os/$arch") {
 if ("$os/$arch" -eq 'Windows/ARM64') {
     Write-Output "::notice title=setup-raeva::using the x86_64 build under emulation on Windows ARM64"
 }
-$exe = if ($target -like '*windows*') { '.exe' } else { '' }
+$windows = $target -like '*windows*'
+$exe = if ($windows) { '.exe' } else { '' }
+$asset = if ($windows) { "raeva-$target.zip" } else { "raeva-$target.tar.gz" }
 
+$mirror = $baseUrl
 if (-not $baseUrl) { $baseUrl = "https://github.com/$repo/releases/download/$tag" }
 $baseUrl = $baseUrl.TrimEnd('/')
 $work = Join-Path $tmpRoot ("raeva-setup." + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
-try {
-    $sumFile = Join-Path $work 'sha256.sum'
-    try { Get-File "$baseUrl/sha256.sum" $sumFile } catch { Fail "cannot download sha256.sum for $tag from ${baseUrl}: $_" }
-
-    $pattern = '^([0-9a-f]{64}) \*?([A-Za-z0-9._-]+-' + [Regex]::Escape($target) + '\.(tar\.gz|tar\.xz|zip))$'
-    $matches_ = @(Get-Content -LiteralPath $sumFile | ForEach-Object { if ($_ -match $pattern) { , @($Matches[1], $Matches[2]) } })
-    if ($matches_.Count -eq 0) { Fail "release $tag has no archive for $target" }
-    if ($matches_.Count -gt 1) { Fail "release $tag lists more than one archive for $target" }
-    $releaseSha = $matches_[0][0]
-    $asset = $matches_[0][1]
-
-    # A checksum shipped with this action release is independent of the
-    # GitHub release, so it also catches a release asset replaced later. The
-    # pin is looked up by target, not by asset name, so an archive uploaded
-    # under another name does not escape it.
-    $knownSha = ''
-    $knownAsset = ''
-    $knownFile = Join-Path $actionPath 'known-checksums.txt'
-    $knownPattern = '-' + [Regex]::Escape($target) + '\.(tar\.gz|tar\.xz|zip)$'
-    if (Test-Path -LiteralPath $knownFile) {
-        foreach ($line in Get-Content -LiteralPath $knownFile) {
-            $f = -split $line
-            if ($f.Count -eq 3 -and $f[0] -eq $version -and $f[1] -match $knownPattern) { $knownAsset = $f[1]; $knownSha = $f[2] }
-        }
+# A private repository serves release assets only through the API, so a
+# failed plain download is retried with gh and the token.
+function Get-Asset([string]$Name) {
+    # Invoke-WebRequest retries a 404 too, which a private release always
+    # gives, so with gh to fall back on it tries once.
+    $fallback = -not $mirror -and $env:GH_TOKEN -and (Get-Command gh -ErrorAction SilentlyContinue)
+    try { Get-File "$baseUrl/$Name" (Join-Path $work $Name) $(if ($fallback) { 0 } else { 3 }); return } catch {
+        if (-not $fallback) { throw }
     }
-    if ($knownSha -and ($knownAsset -ne $asset -or $knownSha -ne $releaseSha)) {
-        Fail "sha256.sum of $tag lists $asset $releaseSha, but this action pins $knownAsset $knownSha"
+    & gh release download $tag --repo $repo --pattern $Name --dir $work --clobber
+    if ($LASTEXITCODE -ne 0) { throw "gh release download failed for $Name" }
+}
+try {
+    # A checksum shipped with this action release is independent of the
+    # GitHub release, so it also catches a release asset replaced later, and
+    # sha256.sum is not needed.
+    $known = @()
+    $knownFile = Join-Path $actionPath 'known-checksums.txt'
+    if (Test-Path -LiteralPath $knownFile) {
+        $known = @(Get-Content -LiteralPath $knownFile | ForEach-Object {
+            $f = -split $_
+            if ($f.Count -eq 3 -and $f[0] -eq $version -and $f[1] -eq $asset) { $f[2] }
+        })
+    }
+    $knownSha = ''
+    if ($known.Count -gt 0) {
+        if ($known.Count -ne 1 -or $known[0] -cnotmatch '^[0-9a-f]{64}$') { Fail "known-checksums.txt has no single valid entry for $version $asset" }
+        $knownSha = $sha = $known[0]
+        $says = 'but this action pins'
+        $source = 'the checksum pinned in this action'
+    } else {
+        try { Get-Asset 'sha256.sum' } catch { Fail "cannot download sha256.sum for $tag from $baseUrl" }
+        # sha256.sum lines look like "<hex> *<asset>".
+        $shas = @(Get-Content -LiteralPath (Join-Path $work 'sha256.sum') | ForEach-Object {
+            $f = -split $_
+            if ($f.Count -eq 2 -and $f[1].TrimStart('*') -eq $asset) { $f[0] }
+        })
+        if ($shas.Count -ne 1 -or $shas[0] -cnotmatch '^[0-9a-f]{64}$') { Fail "sha256.sum of $tag has no single entry for $asset" }
+        $sha = $shas[0]
+        $says = 'sha256.sum says'
+        $source = "sha256.sum of release $tag"
     }
 
     $archive = Join-Path $work $asset
-    try { Get-File "$baseUrl/$asset" $archive } catch { Fail "cannot download ${asset}: $_" }
+    try { Get-Asset $asset } catch { Fail "cannot download $asset" }
     $actual = Sha256 $archive
-    if ($actual -ne $releaseSha) { Fail "$asset has SHA-256 $actual, sha256.sum says $releaseSha" }
-    if ($knownSha) {
-        Write-Output "SHA-256 of $asset matches the checksum pinned in this action"
-    } else {
-        Write-Output "SHA-256 of $asset matches sha256.sum of release $tag"
-    }
+    if ($actual -ne $sha) { Fail "$asset has SHA-256 $actual, $says $sha" }
+    Write-Output "SHA-256 of $asset matches $source"
 
     if ($verify -eq 'attestation') {
         if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail 'verify: attestation needs the GitHub CLI (gh); install it or set verify: sha256' }
@@ -119,33 +140,35 @@ try {
 
     $extract = Join-Path $work 'x'
     New-Item -ItemType Directory -Path $extract | Out-Null
-    if ($asset.EndsWith('.zip')) {
+    # cargo-dist puts raeva.exe at the root of the zip, and raeva in a
+    # raeva-<target> directory in a tarball.
+    if ($windows) {
         Expand-Archive -LiteralPath $archive -DestinationPath $extract
+        $inner = 'raeva.exe'
     } else {
         & tar -xf $archive -C $extract
         if ($LASTEXITCODE -ne 0) { Fail "cannot extract $asset" }
+        $inner = "raeva-$target/raeva"
     }
-
-    # Archives from before the rename hold only rv; later ones hold raeva.
-    $binary = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter "raeva$exe" | Select-Object -First 1
-    if (-not $binary) { $binary = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter "rv$exe" | Select-Object -First 1 }
-    if (-not $binary) { Fail "$asset contains neither raeva$exe nor rv$exe" }
+    $binary = Join-Path $extract $inner
+    if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { Fail "$asset has no $inner" }
 
     $binDir = Join-Path $tmpRoot "raeva-$version-$target" | Join-Path -ChildPath 'bin'
     if (Test-Path -LiteralPath $binDir) { Remove-Item -LiteralPath $binDir -Recurse -Force }
     New-Item -ItemType Directory -Path $binDir | Out-Null
     $raeva = Join-Path $binDir "raeva$exe"
-    Copy-Item -LiteralPath $binary.FullName -Destination $raeva
+    Copy-Item -LiteralPath $binary -Destination $raeva
     if ($env:INPUT_RV_ALIAS -eq 'true') {
         # In PowerShell `rv` is an alias of Remove-Variable; scripts there
         # must call rv.exe. Bash steps on Windows can call rv.
-        Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $binDir "rv$exe")
+        Copy-Item -LiteralPath $binary -Destination (Join-Path $binDir "rv$exe")
     }
     if (-not $IsWindows) { & chmod 0755 $raeva }
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
 $reported = & $raeva --version
 if ($LASTEXITCODE -ne 0) { Fail 'the installed binary does not run on this runner' }
 if (($reported -split ' ')[-1] -ne $version) { Fail "installed binary reports '$reported', expected $version" }
@@ -157,27 +180,15 @@ Out 'bin-dir' $binDir
 Out 'raeva' $raeva
 
 # Cache inputs. The store paths follow docs/configuration.md "File locations".
-# Before 0.5.0, raeva kept the store on Windows in the roaming %APPDATA%.
-$beforeLocalAppData = [version]($version -replace '-.*$', '') -lt [version]'0.5.0'
 $dataDir = if ($env:RAEVA_HOME) { $env:RAEVA_HOME }
-    elseif ($target -like '*windows*' -and $beforeLocalAppData) { Join-Path $env:APPDATA 'raeva' }
-    elseif ($target -like '*windows*') { Join-Path $env:LOCALAPPDATA 'raeva' }
+    elseif ($windows) { Join-Path $env:LOCALAPPDATA 'raeva' }
     elseif ($target -like '*apple-darwin') { Join-Path $HOME 'Library/Application Support/raeva' }
     elseif ($env:XDG_DATA_HOME) { Join-Path $env:XDG_DATA_HOME 'raeva' }
     else { Join-Path $HOME '.local/share/raeva' }
 
-$lockFile = "$env:INPUT_LOCK_FILE"
-if (-not $lockFile) {
-    $lockFile = 'raeva.lock'
-    if (-not (Test-Path -LiteralPath (Join-Path $workdir 'raeva.lock')) -and (Test-Path -LiteralPath (Join-Path $workdir 'rv.lock'))) {
-        $lockFile = 'rv.lock'
-    }
-}
-Out 'lock-file' $lockFile
-
-$lockPath = Join-Path $workdir $lockFile
+$lockPath = Join-Path $workdir 'raeva.lock'
 if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
-    $prefix = "raeva-store-v1-$os-$arch-"
+    $prefix = "raeva-store-v1-$version-$os-$arch-"
     Out 'cache-key' ($prefix + (Sha256 $lockPath))
     Out 'cache-restore-key' $prefix
     if ($env:GITHUB_OUTPUT) {
@@ -186,5 +197,5 @@ if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
             'cache-paths<<RAEVA_EOF', $store, ('!' + (Join-Path $store 'tmp')), (Join-Path $dataDir 'metadata.db'), 'RAEVA_EOF')
     }
 } else {
-    Write-Output "No $lockFile in $workdir; the store cache is skipped"
+    Write-Output "No raeva.lock in $workdir; the store cache is skipped"
 }

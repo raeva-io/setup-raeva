@@ -19,26 +19,56 @@ inputs:
       only, for runners without gh. There is no option to skip verification.
     default: attestation
   token:
-    description: Token that gh uses to fetch attestations. It needs no write scope.
+    description: >-
+      Read token for the attestations, for the release download when the
+      repository is private, and, with lock-diff or vuln, for the base commit's
+      raeva.lock (contents: read). It needs no write scope.
     default: ${{ github.token }}
   cache:
-    description: Restore and save the raeva artifact store and metadata cache, keyed by the lock file.
+    description: >-
+      Restore the raeva artifact store and metadata cache, keyed by the
+      raeva version and raeva.lock, and save them at the end of the job on pushes to the
+      default branch only. The store holds every locked jar, private ones
+      included, and pull requests from forks can restore the default
+      branch's cache; see the README before caching private artifacts in a
+      public repository.
     default: "true"
   working-directory:
-    description: The directory that holds the root pom.xml and the lock file, relative to the workspace.
+    description: The directory that holds the root pom.xml and raeva.lock, relative to the workspace.
     default: "."
-  lock-file:
-    description: >-
-      The lock file name. Empty means raeva.lock, or rv.lock when only that
-      exists.
-    default: ""
   check:
     description: Run `raeva sync --frozen` after the install.
     default: "false"
+  check-mode:
+    description: >-
+      'blocking' fails on a stale, drifted, or missing lock. 'report-only'
+      reports the proposed diff and fix command without failing on lock
+      changes, warns on a missing lock, and vuln scans the proposed lock.
+      Other check errors still fail. Use with check: true.
+    default: blocking
   platforms:
     description: >-
-      Platforms for the frozen check, comma separated (linux-x86_64,
-      macos-aarch64). Empty checks the runner's own platform.
+      Platforms for the frozen check and relock, comma separated
+      (linux-x86_64,macos-aarch64). Empty means every platform the lock
+      records.
+    default: ""
+  settings:
+    description: >-
+      A Maven settings file for raeva to read in place of ~/.m2/settings.xml,
+      relative to the workspace, passed as -s, as for mvn -s.
+    default: ""
+  profiles:
+    description: >-
+      Maven profile ids to activate, comma separated, with !id to deactivate
+      one, passed as -P, as for mvn -P.
+    default: ""
+  properties:
+    description: >-
+      Maven user properties, one name=value per line, each passed as -D, as
+      for mvn -D. Whitespace around a line is dropped. Only properties that
+      change resolution belong here, such as ones that activate a profile or
+      set a version. Only property names read by the models or settings are
+      lock inputs. Unused build flags do not invalidate the lock.
     default: ""
   relock:
     description: >-
@@ -46,22 +76,47 @@ inputs:
       input), for a workflow that commits the result. Linux and macOS only.
       The action never commits or pushes.
     default: "false"
+  lock-diff:
+    description: >-
+      With check, on a pull request, write the semantic diff between the base
+      commit's raeva.lock and this one to the job summary, and the full diff
+      to an artifact. 'only' writes the diff and skips check and vuln, for a
+      job without credentials, such as one for pull requests from forks.
+      Linux and macOS; 'only' fails on Windows.
+    default: "true"
   vuln:
-    description: Run `raeva vuln --format sarif` after the frozen check.
+    description: >-
+      Run `raeva vuln --format sarif` after the frozen check. Pull requests
+      and merge queue groups compare against the base commit's lock and fail
+      only on new findings.
+      If the base has no lock, findings are report-only; scan errors fail.
     default: "false"
   vuln-fail-on:
     description: >-
       Fail the job on findings at or above this severity: any, low, medium,
       high, critical, or never. Unknown severity meets every threshold.
     default: high
+  vex:
+    description: >-
+      OpenVEX files for the scan, one path per line, relative to the
+      workspace. raeva suppresses the findings they mark not_affected; the
+      SARIF log keeps them as suppressed results, which neither count as
+      findings nor fail the job.
+    default: ""
   sarif-upload:
     description: >-
       Upload the SARIF log to GitHub code scanning. The job needs
-      security-events: write. Private repositories need GitHub Code Security.
+      security-events: write, and private repositories need GitHub Code
+      Security. When code scanning says it is not enabled, or outside a
+      pull_request run that the job token may not use it, the upload is
+      skipped with a notice; the findings are in the job summary either way.
     default: "true"
   sarif-category:
-    description: The code scanning category, so raeva alerts do not replace those of another tool.
-    default: raeva
+    description: >-
+      The code scanning category. Empty means raeva for the repository root
+      and raeva/<working-directory> otherwise, so the alerts of several Maven
+      roots do not replace each other.
+    default: ""
   rv-alias:
     description: Also install the binary as `rv`. In PowerShell, `rv` is an alias of Remove-Variable; call rv.exe there.
     default: "false"
@@ -71,8 +126,8 @@ inputs:
   download-base-url:
     description: >-
       Download from this URL instead of the GitHub release, for a mirror. It
-      must serve sha256.sum and the archives. Attestations are still checked
-      against the repository input.
+      must serve the archives, and sha256.sum for versions this action does
+      not pin. Attestations are still checked against the repository input.
     default: ""
 
 outputs:
@@ -85,23 +140,31 @@ outputs:
   raeva:
     description: The full path of the raeva binary.
     value: ${{ steps.unix.outputs.raeva || steps.windows.outputs.raeva }}
-  lock-file:
-    description: The lock file name the action used.
-    value: ${{ steps.unix.outputs.lock-file || steps.windows.outputs.lock-file }}
   relocked-platforms:
     description: The platforms that relock passed to raeva sync.
     value: ${{ steps.relock.outputs.relocked-platforms }}
   cache-hit:
     description: true when the store was restored for this exact lock file.
-    value: ${{ steps.cache.outputs.cache-hit }}
+    value: ${{ steps.cache.outputs.cache-hit || steps.cache-restore.outputs.cache-hit }}
   frozen-exit-code:
     description: The exit code of `raeva sync --frozen`, when check ran.
     value: ${{ steps.scan-unix.outputs.frozen-exit-code || steps.scan-windows.outputs.frozen-exit-code }}
+  proposed-diff:
+    description: The path of the full proposed diff, when a proposed lock was generated.
+    value: ${{ steps.scan-unix.outputs.proposed-diff || steps.scan-windows.outputs.proposed-diff }}
+  fix-command:
+    description: The command to regenerate a stale lock, with property values replaced by <value>.
+    value: ${{ steps.scan-unix.outputs.fix-command || steps.scan-windows.outputs.fix-command }}
   sarif-file:
-    description: The path of the SARIF log, when vuln ran and the scan completed.
+    description: >-
+      The path of the SARIF log, when vuln ran and wrote one. An incomplete
+      scan keeps its partial log, and the job still fails.
     value: ${{ steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file }}
+  sarif-category:
+    description: The code scanning category of the SARIF upload.
+    value: ${{ steps.scan-unix.outputs.sarif-category || steps.scan-windows.outputs.sarif-category }}
   vuln-findings:
-    description: The number of results in the SARIF log.
+    description: The number of results in the SARIF log that no VEX statement suppressed.
     value: ${{ steps.scan-unix.outputs.vuln-findings || steps.scan-windows.outputs.vuln-findings }}
 
 runs:
@@ -118,7 +181,6 @@ runs:
         INPUT_DOWNLOAD_BASE_URL: ${{ inputs.download-base-url }}
         INPUT_RV_ALIAS: ${{ inputs.rv-alias }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        INPUT_LOCK_FILE: ${{ inputs.lock-file }}
         GH_TOKEN: ${{ inputs.token }}
 
     # The default pwsh shell (-command ". '{0}'") reports every failure as
@@ -134,15 +196,28 @@ runs:
         INPUT_DOWNLOAD_BASE_URL: ${{ inputs.download-base-url }}
         INPUT_RV_ALIAS: ${{ inputs.rv-alias }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        INPUT_LOCK_FILE: ${{ inputs.lock-file }}
         GH_TOKEN: ${{ inputs.token }}
 
-    # The cache is saved at the end of the job. A pull request can read the
-    # base branch's cache but writes only to its own scope, and raeva
-    # re-hashes each stored file against its pin before export-m2 uses it.
+    # Only pushes to the default branch save the cache, at the end of the
+    # job; every other run restores it. A cache saved on a pull request would
+    # serve only that pull request, and saving takes longer than a cold
+    # check. raeva re-hashes each stored file against its pin before
+    # export-m2 uses it.
     - id: cache
-      if: inputs.cache == 'true' && (steps.unix.outputs.cache-key || steps.windows.outputs.cache-key)
+      if: >-
+        inputs.cache == 'true' && (steps.unix.outputs.cache-key || steps.windows.outputs.cache-key) &&
+        github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.unix.outputs.cache-paths || steps.windows.outputs.cache-paths }}
+        key: ${{ steps.unix.outputs.cache-key || steps.windows.outputs.cache-key }}
+        restore-keys: ${{ steps.unix.outputs.cache-restore-key || steps.windows.outputs.cache-restore-key }}
+
+    - id: cache-restore
+      if: >-
+        inputs.cache == 'true' && (steps.unix.outputs.cache-key || steps.windows.outputs.cache-key) &&
+        !(github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.unix.outputs.cache-paths || steps.windows.outputs.cache-paths }}
         key: ${{ steps.unix.outputs.cache-key || steps.windows.outputs.cache-key }}
@@ -159,55 +234,107 @@ runs:
         "$GITHUB_ACTION_PATH/scripts/check.sh" relock
       env:
         RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
-        LOCK_FILE: ${{ steps.unix.outputs.lock-file }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_SETTINGS: ${{ inputs.settings }}
+        INPUT_PROFILES: ${{ inputs.profiles }}
+        INPUT_PROPERTIES: ${{ inputs.properties }}
 
     - id: scan-unix
-      if: runner.os != 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true')
+      if: runner.os != 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true' || inputs.lock-diff == 'only')
       shell: bash
       run: '"$GITHUB_ACTION_PATH/scripts/check.sh" scan'
       env:
         RAEVA_BIN: ${{ steps.unix.outputs.raeva }}
-        LOCK_FILE: ${{ steps.unix.outputs.lock-file }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_CHECK: ${{ inputs.check }}
+        INPUT_CHECK_MODE: ${{ inputs.check-mode }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_VULN: ${{ inputs.vuln }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+        INPUT_VEX: ${{ inputs.vex }}
+        INPUT_SARIF_CATEGORY: ${{ inputs.sarif-category }}
+        INPUT_SARIF_UPLOAD: ${{ inputs.sarif-upload }}
+        INPUT_LOCK_DIFF: ${{ inputs.lock-diff }}
+        INPUT_SETTINGS: ${{ inputs.settings }}
+        INPUT_PROFILES: ${{ inputs.profiles }}
+        INPUT_PROPERTIES: ${{ inputs.properties }}
+        GH_TOKEN: ${{ inputs.token }}
+        UPLOAD_TOKEN: ${{ github.token }}
 
     - id: scan-windows
-      if: runner.os == 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true')
+      if: runner.os == 'Windows' && (inputs.check == 'true' || inputs.vuln == 'true' || inputs.lock-diff == 'only')
       shell: pwsh -NoLogo -NoProfile -NonInteractive -File {0}
       run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" scan; exit $LASTEXITCODE'
       env:
         RAEVA_BIN: ${{ steps.windows.outputs.raeva }}
-        LOCK_FILE: ${{ steps.windows.outputs.lock-file }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_CHECK: ${{ inputs.check }}
+        INPUT_CHECK_MODE: ${{ inputs.check-mode }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_VULN: ${{ inputs.vuln }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
+        INPUT_VEX: ${{ inputs.vex }}
+        INPUT_SARIF_CATEGORY: ${{ inputs.sarif-category }}
+        INPUT_SARIF_UPLOAD: ${{ inputs.sarif-upload }}
+        INPUT_LOCK_DIFF: ${{ inputs.lock-diff }}
+        INPUT_SETTINGS: ${{ inputs.settings }}
+        INPUT_PROFILES: ${{ inputs.profiles }}
+        INPUT_PROPERTIES: ${{ inputs.properties }}
+        GH_TOKEN: ${{ inputs.token }}
+        UPLOAD_TOKEN: ${{ github.token }}
 
-    # A push by Dependabot runs with a read-only token and the upload is
-    # refused, so a failed upload warns instead of failing the job.
-    - if: inputs.vuln == 'true' && inputs.sarif-upload == 'true' && (steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file)
+    # A failed frozen check stops the steps after it, so the lock diff
+    # uploads run after a failure too. Jobs that write an artifact of the
+    # same name write the same diff; a later upload replaces an earlier one,
+    # and a lost race only warns.
+    - if: "!cancelled() && steps.scan-unix.outputs.lock-diff-dir"
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.scan-unix.outputs.lock-diff-artifact }}
+        path: ${{ steps.scan-unix.outputs.lock-diff-dir }}
+        retention-days: 7
+        overwrite: true
+        if-no-files-found: ignore
+
+    - if: "!cancelled() && (steps.scan-unix.outputs.proposed-dir || steps.scan-windows.outputs.proposed-dir)"
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.scan-unix.outputs.proposed-artifact || steps.scan-windows.outputs.proposed-artifact }}
+        path: ${{ steps.scan-unix.outputs.proposed-dir || steps.scan-windows.outputs.proposed-dir }}
+        retention-days: 7
+        overwrite: true
+        if-no-files-found: ignore
+
+    # The scan step skips the upload when code scanning is not enabled, or
+    # refuses the job token outside a pull_request run. Any other refused
+    # upload warns instead of failing the job.
+    - if: >-
+        inputs.vuln == 'true' && (steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file) &&
+        (steps.scan-unix.outputs.sarif-upload == 'true' || steps.scan-windows.outputs.sarif-upload == 'true')
       continue-on-error: true
       uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
       with:
         sarif_file: ${{ steps.scan-unix.outputs.sarif-file || steps.scan-windows.outputs.sarif-file }}
-        category: ${{ inputs.sarif-category }}
+        category: ${{ steps.scan-unix.outputs.sarif-category || steps.scan-windows.outputs.sarif-category }}
 
-    - if: inputs.vuln == 'true' && runner.os != 'Windows'
+    # A clean scan needs no gate.
+    - if: inputs.vuln == 'true' && runner.os != 'Windows' && steps.scan-unix.outputs.vuln-exit-code != '0'
       shell: bash
       run: '"$GITHUB_ACTION_PATH/scripts/check.sh" gate'
       env:
         VULN_EXIT_CODE: ${{ steps.scan-unix.outputs.vuln-exit-code }}
+        VULN_FAILING: ${{ steps.scan-unix.outputs.vuln-failing }}
+        VULN_ERROR: ${{ steps.scan-unix.outputs.vuln-error }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}
 
-    - if: inputs.vuln == 'true' && runner.os == 'Windows'
+    - if: inputs.vuln == 'true' && runner.os == 'Windows' && steps.scan-windows.outputs.vuln-exit-code != '0'
       shell: pwsh -NoLogo -NoProfile -NonInteractive -File {0}
       run: '& "$env:GITHUB_ACTION_PATH/scripts/check.ps1" gate; exit $LASTEXITCODE'
       env:
         VULN_EXIT_CODE: ${{ steps.scan-windows.outputs.vuln-exit-code }}
+        VULN_FAILING: ${{ steps.scan-windows.outputs.vuln-failing }}
+        VULN_ERROR: ${{ steps.scan-windows.outputs.vuln-error }}
         INPUT_VULN_FAIL_ON: ${{ inputs.vuln-fail-on }}

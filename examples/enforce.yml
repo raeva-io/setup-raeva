@@ -1,0 +1,63 @@
+# .github/workflows/enforce.yml: build with Maven from the locked artifacts
+# only. raeva.lock holds no build plugins, so one online Maven run fills a
+# separate local repository with them, and the offline build reads it as a
+# tail. Maven Trusted Checksums fail any file whose bytes differ from its pin.
+#
+# For a dependency graph with exact versions only: no version range or
+# SNAPSHOT in the project's POMs, their parents and BOMs, or any transitive
+# dependency's POM. Trusted Checksums accept a file without a pin, as plugins
+# need, so with a range or a SNAPSHOT the online run on a plugin-cache miss
+# can select a version newer than the lock, run it, and leave it in the
+# plugins repository for the offline build. drift.yml only reports such a
+# version after the fact; it does not stop this build from running it.
+name: Locked build
+
+on:
+  push:
+    branches: [main] # your default branch: only its pushes save the raeva cache
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
+      - uses: raeva-io/setup-raeva@v1.0.0
+        with:
+          version: 0.5.0
+          check: true
+      - name: Export the locked artifacts and their checksums
+        run: |
+          raeva export-m2 --m2-path "$RUNNER_TEMP/deps"
+          raeva --json export-checksums | jq -r '.data.maven_properties[]' > "$RUNNER_TEMP/trusted.args"
+      # The plugins Maven needs depend on the goals, so both runs use the
+      # same goals, profiles, and settings.xml. The online run checks the
+      # locked dependencies it downloads against their pins too, before any
+      # test runs them; plugins have no pins. The cache holds the plugins
+      # until a POM changes.
+      - id: plugins
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/plugins
+          key: maven-plugins-${{ runner.os }}-${{ hashFiles('**/pom.xml', '.mvn/maven.config', '.mvn/extensions.xml') }}
+      - name: Fetch the build plugins
+        if: steps.plugins.outputs.cache-hit != 'true'
+        run: |
+          mapfile -t trusted < "$RUNNER_TEMP/trusted.args"
+          mvn --batch-mode verify "${trusted[@]}" -Dmaven.repo.local="$RUNNER_TEMP/plugins"
+      - name: Build offline
+        run: |
+          mapfile -t trusted < "$RUNNER_TEMP/trusted.args"
+          mvn --batch-mode --offline verify "${trusted[@]}" \
+            -Dmaven.repo.local="$RUNNER_TEMP/deps" -Dmaven.repo.local.tail="$RUNNER_TEMP/plugins"

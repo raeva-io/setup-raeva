@@ -463,6 +463,13 @@ function Invoke-Vuln {
     $code = Invoke-Raeva $arguments $sarif $err
     Write-Raw @($err)
     Out 'vuln-exit-code' $code
+    # raeva's reason for an incomplete scan, one line, for the gate's annotation.
+    if ($code -notin 0, 1) {
+        $line = Get-Content -LiteralPath $err -ErrorAction SilentlyContinue | Where-Object { $_.StartsWith('error: ') } | Select-Object -First 1
+        $reason = if ($line) { $line.Substring(7).Replace("`r", '') } else { '' }
+        if ($reason.Length -gt 300) { $reason = $reason.Substring(0, 300) }
+        if ($reason) { Out 'vuln-error' $reason }
+    }
     Summary "`n### Vulnerabilities"
     if ($baseMissing) { Summary "`nThe base commit has no ``raeva.lock`` for this root. Vulnerabilities use ``--fail-on never``; scan errors still fail." }
     if ($committed) { Summary "`nThe committed lock is stale, so the scan reads the proposed lock." }
@@ -596,7 +603,9 @@ function Invoke-Gate {
         exit 1
     }
     if ($code -notin 0, 1) {
-        Write-Output "::error title=raeva vuln::the scan did not complete (exit $code); see the step log"
+        $why = "the scan did not complete (exit $code)"
+        $why += if ($env:VULN_ERROR) { ": $env:VULN_ERROR" } else { '; see the step log' }
+        Write-Output "::error title=raeva vuln::$(EscMsg $why)"
         exit $code
     }
 }

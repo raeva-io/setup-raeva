@@ -68,6 +68,9 @@ case "$1" in
     else
       printf '{"runs":[{"results":[]}]}\n'
     fi
+    [[ -z "${VULN_STDERR:-}" ]] || printf '%s' "$VULN_STDERR" >&2
+    # More than a pipe buffer of error lines after the first.
+    [[ -z "${VULN_STDERR_LONG:-}" ]] || printf 'error: first\nerror: %0200000d\nerror: %0200000d\n' 0 0 >&2
     exit "${SCAN_CODE:-0}" ;;
 esac
 SH
@@ -323,6 +326,32 @@ for tag in "${variants[@]}"; do
   expect "$tag: an incomplete scan without a SARIF log reaches the gate" 0 $?
   has "$t/summary" 'wrote no SARIF log' && [[ "$(output vuln-exit-code)" == 4 ]] \
     && ok "$tag: the summary says the scan wrote no SARIF log" || bad "$tag: incomplete scan without a SARIF log"
+  [[ -z "$(output vuln-error)" ]] && ok "$tag: no reason without raeva's error line" || bad "$tag: reason without an error line"
+  # The gate names raeva's reason, not only the exit code.
+  run env INPUT_VULN=true SARIF_TEXT='' SCAN_CODE=3 \
+    VULN_STDERR=$'warning: W: first\nerror: lockfile not found: raeva.lock\r\n\n  Suggestions:\nerror: second\n' "${check[@]}" scan
+  expect "$tag: an incomplete scan with an error line reaches the gate" 0 $?
+  [[ "$(output vuln-error)" == 'lockfile not found: raeva.lock' ]] \
+    && ok "$tag: an incomplete scan keeps raeva's first error line" || bad "$tag: vuln-error is '$(output vuln-error)'"
+  run env INPUT_VULN=true SARIF_TEXT='' SCAN_CODE=3 VULN_STDERR_LONG=1 "${check[@]}" scan
+  expect "$tag: many long error lines still reach the gate" 0 $?
+  [[ "$(output vuln-error)" == first && "$(output vuln-exit-code)" == 3 ]] \
+    && ok "$tag: many long error lines keep the first reason" || bad "$tag: many long error lines keep the first reason"
+  run env INPUT_VULN=true SARIF_TEXT='' SCAN_CODE=3 VULN_STDERR="error: $(printf '%0400d' 0)"$'\n' "${check[@]}" scan
+  [[ "$(output vuln-error)" == "$(printf '%0300d' 0)" ]] \
+    && ok "$tag: a long reason is cut to 300 characters" || bad "$tag: a long reason is cut to 300 characters"
+  run env INPUT_VULN=true SARIF_TEXT='' SCAN_CODE=3 VULN_STDERR=$'error: \r\nerror: later\n' "${check[@]}" scan
+  ! grep -q '^vuln-error' "$t/output" && ok "$tag: an empty first error line gives no reason" || bad "$tag: an empty first error line gives no reason"
+  run env VULN_EXIT_CODE=3 VULN_ERROR='lockfile not found: raeva.lock' INPUT_VULN_FAIL_ON=high "${check[@]}" gate
+  expect "$tag: the gate keeps the scan exit code" 3 $?
+  has "$t/log" '::error title=raeva vuln::the scan did not complete (exit 3): lockfile not found: raeva.lock' \
+    && ok "$tag: the gate annotation names raeva's reason" || bad "$tag: the gate annotation names raeva's reason"
+  run env VULN_EXIT_CODE=3 VULN_ERROR=$'a%b\n::warning::c' INPUT_VULN_FAIL_ON=high "${check[@]}" gate
+  has "$t/log" 'did not complete (exit 3): a%25b%0A::warning::c' && ! grep -q '^::warning::c' "$t/log" \
+    && ok "$tag: the reason cannot start a workflow command" || bad "$tag: the reason cannot start a workflow command"
+  run env VULN_EXIT_CODE=3 INPUT_VULN_FAIL_ON=high "${check[@]}" gate
+  has "$t/log" 'the scan did not complete (exit 3); see the step log' \
+    && ok "$tag: without a reason the gate points to the step log" || bad "$tag: gate without a reason"
 
   # The step says what runs before raeva's buffered output, and what passed.
   for case in '25349 25.3' '25350 25.4' '49 0.0'; do

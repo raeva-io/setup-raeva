@@ -431,6 +431,14 @@ vuln() {
   "$raeva" -C "$workdir" vuln --format sarif --fail-on "$fail_on" ${baseline[@]+"${baseline[@]}"} ${vex[@]+"${vex[@]}"} ${maven[@]+"${maven[@]}"} > "$sarif" 2> "$errlog" || code=$?
   raw cat "$errlog"
   out vuln-exit-code "$code"
+  # raeva's reason for an incomplete scan, one line, for the gate's annotation.
+  if [[ $code -gt 1 ]]; then
+    local reason
+    # sed stops at the first match itself: a pipe to head would end it with
+    # SIGPIPE under pipefail when more error lines follow.
+    reason=$(sed -n '/^error: /{s///;p;q;}' "$errlog" | tr -d '\r' | cut -c1-300)
+    [[ -z "$reason" ]] || out vuln-error "$reason"
+  fi
   printf '\n### Vulnerabilities\n' >> "$summary"
   if [[ "$base_missing" == true ]]; then
     printf '\nThe base commit has no `raeva.lock` for this root. Vulnerabilities use `--fail-on never`; scan errors still fail.\n' >> "$summary"
@@ -495,7 +503,9 @@ gate() {
         exit 1
       fi ;;
     *)
-      echo "::error title=raeva vuln::the scan did not complete (exit $code); see the step log"
+      local why="the scan did not complete (exit $code)"
+      if [[ -n "${VULN_ERROR:-}" ]]; then why+=": $VULN_ERROR"; else why+="; see the step log"; fi
+      echo "::error title=raeva vuln::$(esc_msg "$why")"
       exit "$code" ;;
   esac
 }

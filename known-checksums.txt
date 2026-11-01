@@ -1,9 +1,12 @@
 # <version> <asset> <sha256>
 # Generated from sha256.sum of each release after its attestation was verified.
-# A release lands here through a reviewed pull request, so a pinned action
-# SHA also pins the archive bytes it accepts for these versions.
-0.4.1 rv-cli-aarch64-apple-darwin.tar.gz 6ed0fd1f7615886bf398ce4e361f058e7767de95c65740fcce10ef62f68aa9c0
-0.4.1 rv-cli-aarch64-unknown-linux-gnu.tar.gz 28529ea82777df2d12e0b61c779ddd02edb6d85336be10345d6d11cd58ce39ec
-0.4.1 rv-cli-x86_64-apple-darwin.tar.gz 9447e0555ec11e312a18665a6465f9cdbe290a950f9c78b53ea59acde92609a0
-0.4.1 rv-cli-x86_64-pc-windows-msvc.zip 70d959d6b38c31357f525d6d34374b8d4f5d206b6855e6a900cd647c259f3152
-0.4.1 rv-cli-x86_64-unknown-linux-gnu.tar.gz c0cae00ea323366254318d54b9f002aac4e470ee54c630bdbe7f6d49e3c0162b
+# Each raeva release gets its lines after it is published, through a reviewed
+# pull request, so a pinned action SHA also pins the archive bytes it accepts
+# for these versions.
+0.5.0 raeva-aarch64-apple-darwin.tar.gz 789e5b44717eb4ca79a107095fcd0c106c164b6aaa291be9cc15fd7df6f840f3
+0.5.0 raeva-aarch64-unknown-linux-gnu.tar.gz 1381a6a3048a73cd55d34ccf0c7361fc601544f61d792dfeec88c15cab172c47
+0.5.0 raeva-aarch64-unknown-linux-musl.tar.gz 4b69cb5b5eeb0f9f8a3ed99550ca5c4f0a38b06a3d809493db237888231956bf
+0.5.0 raeva-x86_64-apple-darwin.tar.gz 2822bcbd2b7a579815cf3c16d3cbff3ae3f64a07113861101440f43fcea9c11f
+0.5.0 raeva-x86_64-pc-windows-msvc.zip d54915e8b6383d65fa73465baf80253311df0e91d63bcd4a4187ecae9bc7fecc
+0.5.0 raeva-x86_64-unknown-linux-gnu.tar.gz e27f5d11b947d9ed2ff76fbb2ada18a2f808126c508402f644631f5e1035ae15
+0.5.0 raeva-x86_64-unknown-linux-musl.tar.gz 6fc91c8722d50ecc530c7478a3669fa282a2fda658acc8078aecb97630e54f9b

@@ -1,0 +1,39 @@
+// Jenkinsfile: check raeva.lock, then run the unchanged Maven build.
+//
+// RAEVA_SHA256 is the line for RAEVA_ARCHIVE in the release's sha256.sum
+// (see "Other CI systems" in the setup-raeva README). Pinning it here means
+// a replaced release asset fails the build. The agent needs curl, tar,
+// sha256sum, glibc, and a JDK listed in [lock] jdks, or the JDK the lock was
+// written with, as JAVA_HOME. The store stays in the workspace between
+// builds; add .raeva/ to .gitignore.
+pipeline {
+  agent any
+  environment {
+    RAEVA_VERSION = '0.5.0'
+    RAEVA_ARCHIVE = 'raeva-x86_64-unknown-linux-gnu.tar.gz'
+    RAEVA_SHA256 = '<sha256 from sha256.sum>'
+  }
+  stages {
+    stage('raeva.lock') {
+      steps {
+        // Single quotes: the shell, not Groovy, expands the variables.
+        sh '''
+          set -eu
+          export RAEVA_HOME="$WORKSPACE/.raeva"
+          mkdir -p .raeva/bin
+          curl --proto '=https' --tlsv1.2 -fsSL -o .raeva/raeva.tar.gz \
+            "https://github.com/raeva-io/raeva/releases/download/v${RAEVA_VERSION}/${RAEVA_ARCHIVE}"
+          echo "${RAEVA_SHA256}  .raeva/raeva.tar.gz" | sha256sum -c -
+          tar -xzf .raeva/raeva.tar.gz -C .raeva/bin --strip-components=1 --wildcards '*/raeva'
+          .raeva/bin/raeva --version
+          .raeva/bin/raeva sync --frozen
+        '''
+      }
+    }
+    stage('Build') {
+      steps {
+        sh 'mvn --batch-mode verify'
+      }
+    }
+  }
+}

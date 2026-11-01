@@ -1,19 +1,38 @@
 # .github/workflows/raeva-relock.yml: write raeva.lock again on Dependabot
-# and Renovate pull requests that change a POM, and push it to the PR branch.
+# pull requests that change a POM, and push it to the PR branch.
+#
+# Pick a tier (see "Bot pull requests" in the README):
+# - Tier 1: this workflow with a GitHub App token or a fine-grained personal
+#   access token. CI runs on the lock commit at once, with no one to approve
+#   it.
+# - Tier 2: this workflow with the default token. GitHub creates the runs of
+#   the lock commit as action_required and starts them when someone with
+#   write access clicks "Approve and run", once per relock and again after
+#   each Dependabot rebase. Approve only the branch's latest commit.
+# - Tier 3: no workflow. A maintainer runs `raeva sync` on the branch. The
+#   failed check's job summary shows the lock it would write.
 #
 # The relock job runs raeva with a read-only token. The push job has write
-# access but runs no raeva and no project code: it copies the lock from the
-# relock job's artifact, after checking that the artifact holds nothing else.
+# access but runs no raeva and no project code: it commits only the files
+# that the relock jobs' artifacts hold, after checking that each one is the
+# lock or a Trusted Checksums file of that job's root, and one that the
+# branch already has.
 name: Relock
 
 on:
   pull_request:
     paths:
       - "**/pom.xml"
-      - ".mvn/maven.config"
-      - "raeva.toml"
+      - "**/.mvn/maven.config"
+      - "**/raeva.toml"
 
 permissions: {}
+
+env:
+  # Each directory with a root pom.xml and its raeva.lock. matrix.root of the
+  # relock job lists the same roots in the same order; strategy cannot read
+  # env, and each relock leg fails when the two lists differ.
+  ROOTS: '["."]'
 
 concurrency:
   group: raeva-relock-${{ github.event.pull_request.number }}
@@ -21,19 +40,23 @@ concurrency:
 
 jobs:
   relock:
-    # Only a bot's own push to its own branch in this repository. A fork PR,
-    # a PR opened by a person, and a push by anyone else to a bot branch are
-    # all skipped. The paths filter sees the whole pull request, so the lock
-    # commit starts this workflow again; this condition skips it.
+    # Only Dependabot's own push to its own branch in this repository. A fork
+    # PR, a PR opened by a person, and a push by anyone else to a bot branch
+    # are all skipped. The paths filter sees the whole pull request, so the
+    # lock commit starts this workflow again; this condition skips it.
+    # For hosted Renovate too, accept renovate[bot] here and set its
+    # gitIgnoredAuthors (README, "Bot pull requests").
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == github.actor &&
-      (github.actor == 'dependabot[bot]' || github.actor == 'renovate[bot]')
+      github.actor == 'dependabot[bot]'
+    strategy:
+      matrix:
+        # The roots of ROOTS, in the same order.
+        root: ["."]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      changed: ${{ steps.diff.outputs.changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,89 +65,173 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
-      - id: raeva
-        uses: raeva-io/setup-raeva@v1.0.0
+          java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
+      # A private Maven repository needs its credentials here too, from
+      # Dependabot secrets, as in private.yml (README, "Bot pull requests").
+      - uses: raeva-io/setup-raeva@v1.0.0
         with:
           version: 0.5.0
           relock: true
+          working-directory: ${{ matrix.root }}
       - id: diff
         env:
-          LOCK: ${{ steps.raeva.outputs.lock-file }}
+          ROOT: ${{ matrix.root }}
+          INDEX: ${{ strategy.job-index }}
+          TOTAL: ${{ strategy.job-total }}
         run: |
-          mkdir -p "$RUNNER_TEMP/relock"
-          if git diff --quiet -- "$LOCK" .mvn/checksums; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+          jq -e --arg root "$ROOT" --argjson i "$INDEX" --argjson n "$TOTAL" \
+            'length == $n and .[$i] == $root' <<< "$ROOTS" > /dev/null || {
+            echo "::error::matrix.root and ROOTS must list the same roots in the same order"; exit 1; }
+          out="$RUNNER_TEMP/relock/$INDEX"
+          mkdir -p "$out"
+          # The root's committed lock and Trusted Checksums files that relock
+          # changed, as paths from the repository root.
+          mapfile -t files < <(git diff --name-only -- "$ROOT/raeva.lock" \
+            "$ROOT/.mvn/checksums/checksums.sha256" "$ROOT/.mvn/checksums/checksums.sha1")
+          if [[ ${#files[@]} -eq 0 ]]; then
+            touch "$out/unchanged"
+            echo "path=$out/unchanged" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git diff --stat -- "$LOCK" .mvn/checksums
-          mapfile -t checksums < <(git ls-files .mvn/checksums)
-          tar -cf "$RUNNER_TEMP/relock/relock.tar" "$LOCK" "${checksums[@]}"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-      - if: steps.diff.outputs.changed == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          git diff --stat -- "${files[@]}"
+          tar -cf "$out/relock.tar" "${files[@]}"
+          echo "path=$out/relock.tar" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: raeva-relock
-          path: ${{ runner.temp }}/relock/relock.tar
+          name: raeva-relock-${{ strategy.job-index }}
+          path: ${{ steps.diff.outputs.path }}
+          if-no-files-found: error
           retention-days: 1
 
   push:
     needs: relock
-    if: needs.relock.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     steps:
-      # Optional. After a push with the default token, GitHub holds the CI
-      # runs of the new commit until someone with write access approves them;
-      # after a push with a GitHub App token, they start at once. Store the
-      # App's client ID as the variable RELOCK_APP_CLIENT_ID and its key as the
-      # secret RELOCK_APP_PRIVATE_KEY (a Dependabot secret for Dependabot PRs;
-      # Dependabot runs see variables, but only Dependabot secrets).
+      - id: found
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob dotglob
+          : "${ROOTS:?set ROOTS}"
+          mapfile -t roots < <(jq -r '.[]' <<< "$ROOTS")
+          any=false
+          mkdir -p "$RUNNER_TEMP/relock"
+          for i in "${!roots[@]}"; do
+            artifact="raeva-relock-$i"
+            dir="$RUNNER_TEMP/relock/$i"
+            mkdir "$dir"
+            gh run download "$GITHUB_RUN_ID" -n "$artifact" -D "$dir"
+            entries=("$dir"/*)
+            [[ ${#entries[@]} -eq 1 && -f "${entries[0]}" && ! -L "${entries[0]}" ]] || {
+              echo "::error::$artifact must hold exactly one regular file"; exit 1;
+            }
+            case "${entries[0]##*/}" in
+              relock.tar) any=true ;;
+              unchanged) ;;
+              *) echo "::error::$artifact must hold relock.tar or unchanged"; exit 1 ;;
+            esac
+          done
+          echo "any=$any" >> "$GITHUB_OUTPUT"
+          [[ "$any" == true ]] || echo "All roots are unchanged."
+      # Tier 1. Store the App's client ID as the variable RELOCK_APP_CLIENT_ID
+      # and its private key as the secret RELOCK_APP_PRIVATE_KEY, or a
+      # fine-grained token with Contents: read and write on this repository
+      # as the secret RELOCK_TOKEN. Dependabot runs see variables but only
+      # Dependabot secrets, so store the secret there too. Without either,
+      # the push uses the default token (Tier 2).
       - id: app
-        if: vars.RELOCK_APP_CLIENT_ID != ''
+        if: steps.found.outputs.any == 'true' && vars.RELOCK_APP_CLIENT_ID != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELOCK_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELOCK_APP_PRIVATE_KEY }}
           permission-contents: write
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: steps.found.outputs.any == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: raeva-relock
-          path: ${{ runner.temp }}/relock
       - name: Commit and push the lock
+        if: steps.found.outputs.any == 'true'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TOKEN: ${{ steps.app.outputs.token || github.token }}
+          TOKEN: ${{ steps.app.outputs.token || secrets.RELOCK_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/relock/relock.tar"
-          # The artifact was written by a job that processed network data.
-          # Accept only the lock and the Trusted Checksums files.
-          allowed='^(raeva\.lock|rv\.lock|\.mvn/checksums/checksums\.sha(256|1))$'
-          while IFS= read -r name; do
-            [[ "$name" =~ $allowed ]] || { echo "::error::unexpected file in artifact: $name"; exit 1; }
-          done < <(tar -tf "$archive")
-          mapfile -t files < <(tar -tf "$archive")
-          tar -xf "$archive" --no-same-owner --no-same-permissions
-          for name in "${files[@]}"; do
-            [[ -f "$name" && ! -L "$name" ]] || { echo "::error::$name is not a regular file"; exit 1; }
+          # Only the push sees the token, not git filters run by add or commit.
+          token="$TOKEN"
+          unset TOKEN
+          : "${ROOTS:?set ROOTS}"
+          mapfile -t roots < <(jq -r '.[]' <<< "$ROOTS")
+          # The artifacts were written by jobs that processed network data.
+          # Artifact raeva-relock-N may hold only the lock and the Trusted
+          # Checksums files of root N, as regular files the branch has.
+          files=()
+          seen=$'\n'
+          for i in "${!roots[@]}"; do
+            artifact="raeva-relock-$i"
+            dir="$RUNNER_TEMP/relock/$i"
+            [[ ! -f "$dir/unchanged" ]] || continue
+            root="${roots[i]}"
+            root="${root#./}"
+            root="${root%/}"
+            prefix=""
+            [[ "$root" == . || -z "$root" ]] || prefix="$root/"
+            archive="$dir/relock.tar"
+            names=$(tar -tf "$archive")
+            [[ -n "$names" ]] || { echo "::error::$artifact holds an empty tar"; exit 1; }
+            types=$(tar -tvf "$archive" | cut -c1)
+            while IFS=$'\t' read -r type name; do
+              case "$name" in
+                "${prefix}raeva.lock" | "${prefix}.mvn/checksums/checksums.sha256" | "${prefix}.mvn/checksums/checksums.sha1") ;;
+                *) echo "::error::unexpected file in artifact $artifact: $name"; exit 1 ;;
+              esac
+              [[ "$type" == - ]] || { echo "::error::$name is not a regular file"; exit 1; }
+              [[ "$seen" != *$'\n'"$name"$'\n'* ]] || { echo "::error::$name is in two artifacts"; exit 1; }
+              seen+="$name"$'\n'
+              case "$(git ls-files --stage -- "$name" | cut -d' ' -f1)" in
+                100644|100755) ;;
+                *) echo "::error::$name is not a committed file of this branch"; exit 1 ;;
+              esac
+              # Only the bytes: the file keeps its mode and stays a file.
+              [[ -f "$name" && ! -L "$name" ]] || { echo "::error::$name is not a regular file"; exit 1; }
+              tar -xOf "$archive" "$name" > "$name"
+              if git diff --quiet HEAD -- "$name"; then
+                echo "::error::$name claims a change but matches HEAD"
+                exit 1
+              fi
+              files+=("$name")
+            done < <(paste <(printf '%s\n' "$types") <(printf '%s\n' "$names"))
           done
+          [[ ${#files[@]} -gt 0 ]] || { echo "::error::No files changed"; exit 1; }
           git add -- "${files[@]}"
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit --quiet -m 'Update raeva.lock [dependabot skip]'
-          auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)")
-          if ! git "${auth[@]}" push --quiet origin "HEAD:refs/heads/$HEAD_REF"; then
-            # A fast-forward push fails when the bot pushed again. That push
-            # starts a new relock run, so this one stops without an error.
-            if [[ "$(git "${auth[@]}" ls-remote origin "refs/heads/$HEAD_REF" | cut -f1)" != "$HEAD_SHA" ]]; then
-              echo "::notice::$HEAD_REF moved since this run started; the newer run relocks it"
+          # The credential goes to git through its environment, not its
+          # arguments, and only to the two git commands that need it.
+          basic=$(printf 'x-access-token:%s' "$token" | base64 -w0)
+          echo "::add-mask::$basic"
+          auth_git() {
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" git "$@"
+          }
+          # The lease refuses a branch that moved or was deleted, as when the
+          # pull request merged, instead of creating it again.
+          if ! auth_git push --quiet --force-with-lease="refs/heads/$HEAD_REF:$HEAD_SHA" origin "HEAD:refs/heads/$HEAD_REF"; then
+            # When the bot pushed again, that push starts a new relock run, so
+            # this one stops without an error. ls-remote exits 2 when the
+            # branch is gone, and 128 when the remote cannot be read.
+            code=0
+            remote=$(auth_git ls-remote --exit-code origin "refs/heads/$HEAD_REF" | cut -f1) || code=$?
+            if [[ $code -eq 2 || ( $code -eq 0 && "$remote" != "$HEAD_SHA" ) ]]; then
+              echo "::notice::$HEAD_REF moved or was deleted since this run started; there is nothing to relock here"
               exit 0
             fi
             exit 1

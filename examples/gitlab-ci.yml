@@ -1,20 +1,24 @@
-# .gitlab-ci.yml: check raeva.lock, then build with Maven.
+# .gitlab-ci.yml: check raeva.lock next to an unchanged Maven build.
 #
-# RAEVA_SHA256 is the line for RAEVA_ARCHIVE in the release's sha256.sum.
-# Pinning it here means a replaced release asset fails the job.
+# RAEVA_SHA256 is the line for RAEVA_ARCHIVE in the release's sha256.sum
+# (see "Other CI systems" in the setup-raeva README). Pinning it here means
+# a replaced release asset fails the job. Add .raeva/ to .gitignore.
 variables:
   RAEVA_VERSION: "0.5.0"
   RAEVA_ARCHIVE: "raeva-x86_64-unknown-linux-gnu.tar.gz"
   RAEVA_SHA256: "<sha256 from sha256.sum>"
   # GitLab caches only paths inside the project directory.
   RAEVA_HOME: "$CI_PROJECT_DIR/.raeva"
+  RAEVA_CACHE_POLICY: pull
 
 .raeva:
+  # A JDK listed in [lock] jdks, or the JDK the lock was written with.
   image: maven:3.9-eclipse-temurin-21
   cache:
     key:
       files: [raeva.lock]
     paths: [.raeva/store, .raeva/metadata.db]
+    policy: $RAEVA_CACHE_POLICY
   before_script:
     - mkdir -p .raeva/bin
     - curl --proto '=https' --tlsv1.2 -fsSL -o .raeva/raeva.tar.gz "https://github.com/raeva-io/raeva/releases/download/v${RAEVA_VERSION}/${RAEVA_ARCHIVE}"
@@ -23,19 +27,33 @@ variables:
     - export PATH="$CI_PROJECT_DIR/.raeva/bin:$PATH"
     - raeva --version
 
-build:
+# Fails when raeva.lock no longer matches the POMs. Only the default branch
+# saves the cache; other pipelines read it.
+lock:
   extends: .raeva
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      variables:
+        RAEVA_CACHE_POLICY: pull-push
+    - when: on_success
   script:
     - raeva sync --frozen
-    - raeva export-m2
+
+build:
+  image: maven:3.9-eclipse-temurin-21
+  script:
     - mvn --batch-mode verify
 
-# SARIF ingestion needs GitLab Ultimate, and GitLab reads the report only
-# from a job that succeeds, so findings (exit 1) do not fail this job.
+# Merge requests only report findings; the default branch and scheduled
+# pipelines fail on findings at high or above.
 vulnerabilities:
   extends: .raeva
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      variables:
+        RAEVA_FAIL_ON: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_PIPELINE_SOURCE == "schedule"
+      variables:
+        RAEVA_FAIL_ON: high
   script:
-    - raeva vuln --format sarif > raeva.sarif || [ $? -eq 1 ]
-  artifacts:
-    reports:
-      sarif: raeva.sarif
+    - raeva vuln --fail-on "$RAEVA_FAIL_ON"

@@ -375,12 +375,16 @@ for tag in "${variants[@]}"; do
     && has "$t/summary" 'a missing lock does not fail this job' && ok "$tag: report-only warns on a missing lock" || bad "$tag: report-only missing lock"
   run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_VULN=true SCAN_CODE=3 FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
   expect "$tag: report-only without a lock still scans" 0 $?
-  [[ "$(output vuln-exit-code)" == 3 ]] && ok "$tag: a scan without a lock still fails at the gate" || bad "$tag: vuln without a lock"
+  code=$(output vuln-exit-code)
+  run env VULN_EXIT_CODE="$code" INPUT_VULN_FAIL_ON=high "${check[@]}" gate
+  expect "$tag: a scan without a lock still fails at the gate" 3 $?
   run env INPUT_CHECK=true FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
   expect "$tag: blocking fails without a lock" 3 $?
 
   # A crash, a kill, or a binary that cannot load writes no JSON envelope.
-  crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom\n\n')
+  # $(...) drops trailing newlines, so the blank lines that end the output
+  # are added after it.
+  crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom')$'\n\n\n'
   run env INPUT_CHECK=true FROZEN_CODE=101 FROZEN_JSON='' FROZEN_STDERR="$crash" "${check[@]}" scan
   expect "$tag: a crash keeps its exit code" 101 $?
   annotation=$(grep '^::error file=' "$t/log")
@@ -525,12 +529,24 @@ LOCK
     expect "$tag: lock diff and baseline with base $case" 0 $?
     ! has "$t/requests" /contents/ && ok "$tag: lock diff reuses the baseline read ($case)" || bad "$tag: lock diff read the base lock again ($case)"
   done
-  [[ "$tag" != bash ]] || has "$t/summary" 'This pull request adds' && ok "$tag: lock diff of a base without a lock" || bad "$tag: lock diff of a base without a lock"
+  if [[ "$tag" == bash ]]; then
+    has "$t/summary" 'This pull request adds' && ok "$tag: lock diff of a base without a lock" || bad "$tag: lock diff of a base without a lock"
+  fi
+  # The pull request changes the lock, so the diff runs. The fake raeva
+  # fails a --baseline file other than the base commit's lock.
+  printf '# changed\n' >> "$t/project/raeva.lock"
   run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_VULN=true \
     INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 \
     GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
-  [[ "$(output vuln-exit-code)" == 0 ]] && ok "$tag: scan uses validated baseline" || bad "$tag: baseline scan"
-  [[ "$tag" != bash ]] || has "$t/summary" '### raeva.lock' && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
+  baseline=$(sed -n '/^--baseline$/{n;p;q;}' "$t/args")
+  [[ "$(output vuln-exit-code)" == 0 && -n "$baseline" ]] && cmp -s "$baseline" "$t/original.lock" \
+    && ok "$tag: scan uses validated baseline" || bad "$tag: baseline scan"
+  if [[ "$tag" == bash ]]; then
+    tr '\n' ' ' < "$t/args" | grep -qF -- " lock diff $baseline raeva.lock " && ! has "$t/requests" /contents/ \
+      && has "$t/summary" '### raeva.lock changes against the base branch' && has "$t/summary" 'gson 2.13.2 -> 2.13.1' \
+      && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
+  fi
+  cp "$t/original.lock" "$t/project/raeva.lock"
   has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
     && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
   run env -C "$t/project" INPUT_VULN=true INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 SCAN_CODE=1 \

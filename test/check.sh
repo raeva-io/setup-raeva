@@ -111,7 +111,7 @@ elif '/contents/' in url:
     body = 'display diff response, never a vulnerability baseline\n'
 elif '/code-scanning/alerts' in url:
     status = int(os.getenv('CS_STATUS', '200'))
-    body = {'message': os.getenv('CS_MESSAGE', '')} if status != 200 else []
+    body = json.loads(os.getenv('CS_BODY') or json.dumps({'message': os.getenv('CS_MESSAGE', '')})) if status != 200 else []
 else:
     sys.exit('unexpected request')
 Path(os.environ['TEST_DIR'], 'requests').open('a').write(url + '\n')
@@ -488,12 +488,23 @@ for tag in "${variants[@]}"; do
       [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: a 403 ($message, $event) leaves the upload to try" || bad "$tag: 403 ($message, $event)"
     fi
   done
-  # The whole message decides; the notice quotes its first 200 characters,
-  # never part of one.
-  run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GITHUB_EVENT_NAME=push INPUT_WORKING_DIRECTORY=. CS_STATUS=403 \
-    CS_MESSAGE="$(printf '%0199d' 0)ééé Advanced Security must be enabled for this repository to use code scanning." "${check[@]}" scan
-  [[ -z "$(output sarif-upload)" ]] && has "$t/log" "code scanning answered HTTP 403 ($(printf '%0199d' 0)é). A private repository needs GitHub Code Security." \
-    && ok "$tag: a long 403 message is read whole and quoted in part" || bad "$tag: a long 403 message"
+  # The whole message decides; the notice quotes its first 200 code points
+  # without trailing newlines. A message that is not a string says nothing.
+  zeros=$(printf '%0199d' 0)
+  for case in "${zeros}ééé must be enabled|${zeros}é" "${zeros}😀😀 must be enabled|${zeros}😀" \
+    $'Advanced Security must be enabled\n\n|Advanced Security must be enabled' '|'; do
+    IFS='|' read -r message quoted <<< "${case//$'\n'/$'\r'}"
+    body=""
+    [[ -n "$message" ]] || body='{"message":["not","enabled"]}'
+    run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GITHUB_EVENT_NAME=push INPUT_WORKING_DIRECTORY=. CS_STATUS=403 \
+      CS_MESSAGE="${message//$'\r'/$'\n'}" CS_BODY="$body" "${check[@]}" scan
+    if [[ -n "$message" ]]; then
+      [[ -z "$(output sarif-upload)" ]] && has "$t/log" "code scanning answered HTTP 403 ($quoted). A private repository needs GitHub Code Security." \
+        && ok "$tag: a 403 message is read whole and quoted in part (${quoted: -20})" || bad "$tag: 403 message (${quoted: -20})"
+    else
+      [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: a 403 message that is not a string leaves the upload to try" || bad "$tag: 403 message that is not a string"
+    fi
+  done
 
   run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_SETTINGS='/w/a`b``c/settings.xml' "${check[@]}" scan
   has "$t/summary" 'reads the settings file `/w/abc/settings.xml`;' && ok "$tag: a settings path cannot end its code span" || bad "$tag: settings path backticks"

@@ -350,8 +350,8 @@ sarif_upload() {
     "$api/repos/$GITHUB_REPOSITORY/code-scanning/alerts?per_page=1") || status=000
   if [[ "$status" == 403 ]]; then
     # The whole message is matched; the notice quotes its first 200 characters.
-    message=$(jq -r '.message // empty' "$body" 2>/dev/null || true)
-    why=$(jq -r '.message // empty | tostring | .[:200]' "$body" 2>/dev/null || true)
+    message=$(jq -r '.message | strings' "$body" 2>/dev/null || true)
+    why=$(jq -r '.message | strings | .[:200]' "$body" 2>/dev/null || true)
     if grep -qiE 'must be enabled|not enabled' <<< "$message"; then
       cause="A private repository needs GitHub Code Security."
     elif [[ "${GITHUB_EVENT_NAME:-}" != pull_request ]] && grep -qiF 'Resource not accessible by integration' <<< "$message"; then

@@ -352,14 +352,23 @@ function Test-SarifUpload {
         $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -Uri "$api/repos/$env:GITHUB_REPOSITORY/code-scanning/alerts?per_page=1" `
             -Headers @{ Authorization = "Bearer $uploadToken"; Accept = 'application/vnd.github+json' }
         $status = [int]$response.StatusCode
-        if ($status -eq 403) { try { $why = "$(($response.Content | ConvertFrom-Json).message)" } catch { } }
+        if ($status -eq 403) {
+            try {
+                $message = ($response.Content | ConvertFrom-Json).message
+                if ($message -is [string]) { $why = $message }
+            } catch { }
+        }
     } catch { }
     $cause = if ($status -ne 403) { '' }
         elseif ($why -match 'must be enabled|not enabled') { 'A private repository needs GitHub Code Security.' }
         elseif ("$env:GITHUB_EVENT_NAME" -cne 'pull_request' -and $why -like '*Resource not accessible by integration*') { 'Outside a pull_request run, the upload needs security-events: write.' }
         else { '' }
     if ($cause) {
-        if ($why.Length -gt 200) { $why = $why.Substring(0, 200) }
+        # 200 code points, as jq counts them, without the newlines that
+        # command substitution drops in check.sh.
+        $end = 0
+        for ($n = 0; $n -lt 200 -and $end -lt $why.Length; $n++) { $end += if ([char]::IsSurrogatePair($why, $end)) { 2 } else { 1 } }
+        $why = $why.Substring(0, $end).TrimEnd("`n")
         Write-Output "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(EscMsg $why)). $cause The findings are in the job summary; sarif-upload: false skips this check."
         return
     }

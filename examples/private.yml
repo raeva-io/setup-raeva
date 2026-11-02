@@ -44,7 +44,7 @@ jobs:
           server-username-env-var: REPO_USER
           server-password-env-var: REPO_TOKEN
           settings-path: ${{ runner.temp }}
-      - uses: raeva-io/setup-raeva@f944e5a93055fee7320fbbb9026b1e4fe7ee4df7 # v1.0.0
+      - uses: raeva-io/setup-raeva@531ed34d5b24d6a07f3ed9b904fc5d69dba80d12 # v1.0.1
         with:
           version: 0.5.1
           check: true
@@ -59,7 +59,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: raeva-io/setup-raeva@f944e5a93055fee7320fbbb9026b1e4fe7ee4df7 # v1.0.0
+      - uses: raeva-io/setup-raeva@531ed34d5b24d6a07f3ed9b904fc5d69dba80d12 # v1.0.1
         with:
           version: 0.5.1
           cache: false

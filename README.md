@@ -8,20 +8,22 @@ vulnerabilities.
 
 ## Quick start
 
-First write the lock on your machine, tell git how to merge it, and commit
+First write the lock on your machine, mark it as generated, and commit
 both files:
 
 ```sh
 raeva sync
-printf 'raeva.lock -merge linguist-generated=true\n' >> .gitattributes
+printf 'raeva.lock linguist-generated=true\n' >> .gitattributes
 git add raeva.lock .gitattributes
 git commit -m "Add raeva.lock"
 ```
 
-With `-merge`, git keeps your side of a conflicted `raeva.lock` without
-conflict markers and still reports the conflict: fix the POMs, run
-`raeva sync`, and `git add raeva.lock`. `linguist-generated` folds the lock
-in pull request diffs; the job summary has the readable diff.
+`linguist-generated` folds the lock in pull request diffs; the job summary
+has the readable diff. Git merges `raeva.lock` with its default driver:
+edits to different modules usually merge cleanly, and the check reads the
+merged lock. When the lock conflicts, run `raeva sync` on the merged POMs
+and `git add raeva.lock`. If your `.gitattributes` has the
+`raeva.lock -merge` line that setup-raeva 1.0.0 suggested, remove it.
 
 Then keep your Maven build as it is and add a workflow that checks the lock
 (`examples/ci.yml` has both jobs):
@@ -201,9 +203,10 @@ input. Renovate updates `version` with a regex manager in `renovate.json`:
 }
 ```
 
-Every Maven update rewrites `raeva.lock`, so once one Dependabot pull
-request merges, the others conflict in the lock. Group the Maven updates in
-`.github/dependabot.yml`, so that one pull request per run carries them:
+A Maven update rewrites part of `raeva.lock`, so once one Dependabot pull
+request merges, another that changed nearby lines of the lock conflicts.
+Group the Maven updates in `.github/dependabot.yml`, so that one pull
+request per run carries them:
 
 ```yaml
 version: 2

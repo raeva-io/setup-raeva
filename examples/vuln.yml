@@ -44,7 +44,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@f944e5a93055fee7320fbbb9026b1e4fe7ee4df7 # v1.0.0
         with:
-          version: 0.5.0
+          version: 0.5.1
           vuln: true
           vuln-fail-on: high
           # A scheduled run starts from an empty store and metadata cache, so

@@ -54,6 +54,9 @@ assert "ROOTS" not in jobs["push"].get("env", {})
 found = next(s for s in jobs["push"]["steps"] if s.get("id") == "found")
 assert found["env"]["GH_TOKEN"] == "${{ github.token }}"
 assert found["env"]["GH_REPO"] == "${{ github.repository }}"
+push = next(s for s in jobs["push"]["steps"] if s.get("name") == "Commit and push the lock")
+assert push["env"]["TOKEN"] == "${{ steps.app.outputs.token || secrets.RELOCK_TOKEN || github.token }}"
+assert push["env"]["DEFAULT_TOKEN"] == "${{ !steps.app.outputs.token && !secrets.RELOCK_TOKEN }}"
 for step in jobs["push"]["steps"]:
     if step is not found:
         assert "steps.found.outputs.any ==" in step["if"]
@@ -148,7 +151,8 @@ run_push_job() { # <workdir> <uploaded file, artifact directory, or ->...
     # The commit hook records what git add and commit run with.
     printf '#!/bin/sh\nenv > "%s"\n' "$dir.commit-env" > "$dir/.git/hooks/pre-commit" && chmod +x "$dir/.git/hooks/pre-commit"
     (cd "$dir" && env PATH="$t/spy:$PATH" SPY_ENV="$dir.spy-env" ROOTS="${TEST_ROOTS:-[\".\", \"services/api/\"]}" HEAD_REF="$branch" HEAD_SHA="$head_sha" \
-      TOKEN=not-a-real-token GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$dir.temp" bash -e "$t/push.sh" >> "$dir.log" 2>&1)
+      TOKEN=not-a-real-token DEFAULT_TOKEN="${DEFAULT_TOKEN:-false}" GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$dir.temp" \
+      GITHUB_STEP_SUMMARY="$dir.summary" bash -e "$t/push.sh" >> "$dir.log" 2>&1)
   fi
 }
 
@@ -202,11 +206,14 @@ code=$?
 
 # A one-root matrix uses the same file layout.
 git -C "$t/remote.git" update-ref "refs/heads/$branch" "$head_sha"
-TEST_ROOTS='["."]' run_push_job "$t/push-single" "$root_tar"
+TEST_ROOTS='["."]' DEFAULT_TOKEN=true run_push_job "$t/push-single" "$root_tar"
 code=$?
 [[ $code -eq 0 ]] && [[ "$(git -C "$t/push-single" rev-list --count "$head_sha..HEAD")" == 1 ]] \
   && [[ "$(git -C "$t/push-single" diff --name-only "$head_sha" HEAD)" == raeva.lock ]] \
   && ok "a single-root matrix commits its lock" || { bad "a single-root matrix commits its lock (exit $code)"; cat "$t/push-single.log"; }
+grep -q '^::notice::Pushed the lock commit with the default token' "$t/push-single.log" && grep -q action_required "$t/push-single.summary" \
+  && ! grep -q action_required "$t/push.log" && ok "a default-token push says its runs wait for approval" \
+  || bad "a default-token push says its runs wait for approval"
 
 git -C "$t/remote.git" update-ref "refs/heads/$branch" "$head_sha"
 run_push_job "$t/push-unchanged" "$unchanged" "$unchanged"

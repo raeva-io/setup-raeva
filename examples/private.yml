@@ -28,7 +28,12 @@ jobs:
           persist-credentials: false
       # Writes $RUNNER_TEMP/settings.xml with a <server> for the repository
       # id that reads the credentials from REPO_USER and REPO_TOKEN, and
-      # leaves ~/.m2/settings.xml as it is.
+      # leaves ~/.m2/settings.xml as it is. raeva and mvn read this file in
+      # place of ~/.m2/settings.xml, and it holds only the <server>, so
+      # declare the repository with the same id in the POM or raeva.toml: a
+      # <repository> only in a developer's ~/.m2/settings.xml is not seen
+      # here. raeva, as Maven, asks Maven Central last, so the private
+      # repository is asked for each public artifact first.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin

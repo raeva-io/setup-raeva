@@ -37,7 +37,10 @@ raeva sync --platforms linux-x86_64,macos-aarch64
 Later syncs keep the platforms the lock records.
 
 Then keep your Maven build as it is and add a workflow that checks the lock
-(`examples/ci.yml` has both jobs):
+(`examples/ci.yml` has both jobs). If the build reads a private Maven
+repository, start from `examples/private.yml` instead: it gives raeva the
+credentials and sets `cache: false`, since the cache holds the private jars
+and pull requests from forks restore it.
 
 ```yaml
 name: raeva

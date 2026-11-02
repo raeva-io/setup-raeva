@@ -461,6 +461,14 @@ for tag in "${variants[@]}"; do
     && ok "$tag: severities and baseline states compare by code point" || bad "$tag: ordinal severity ($(output vuln-failing))"
   [[ "$(sed -n 's/^| [^|]* | [^|]* | \([^|]*\) |.*/\1/p' "$t/summary" | tr '\n' ' ')" == 'Dependency ---  p1 p2 p3 q q q q p4 p5  ' ]] \
     && has "$t/summary" '| CVE-u |  |  | not compared |  |' && ok "$tag: the table sorts ids by code point, stably" || bad "$tag: code point order"
+  # A baseline state with a soft hyphen is not "unchanged", and an empty
+  # severity shows as written.
+  sarif="{\"runs\":[{\"results\":[$(r CVE-sh Critical ',"baselineState":"unch\u00adanged"'),$(r CVE-empty '')]}]}"
+  run env INPUT_VULN=true INPUT_VULN_FAIL_ON=critical SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  [[ "$(output vuln-failing)" == *"(CVE-sh"* ]] && has "$t/summary" '|  | CVE-empty |' \
+    && ok "$tag: a soft hyphen keeps a baseline state apart, an empty severity stays empty" || bad "$tag: soft hyphen state or empty severity ($(output vuln-failing))"
+  run env VULN_EXIT_CODE=1 INPUT_VULN_FAIL_ON=NEVER "${check[@]}" gate
+  expect "$tag: the gate compares never exactly" 1 $?
   for input in INPUT_VULN_FAIL_ON=High INPUT_CHECK_MODE=Blocking; do
     run env INPUT_VULN=true "$input" "${check[@]}" scan
     expect "$tag: $input is refused" 2 $?
@@ -496,7 +504,7 @@ for tag in "${variants[@]}"; do
     $'Advanced Security must be enabled\n\n|Advanced Security must be enabled' '|'; do
     IFS='|' read -r message quoted <<< "${case//$'\n'/$'\r'}"
     body=""
-    [[ -n "$message" ]] || body='{"message":["not","enabled"]}'
+    [[ -n "$message" ]] || body='{"message":["not enabled"]}'
     run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GITHUB_EVENT_NAME=push INPUT_WORKING_DIRECTORY=. CS_STATUS=403 \
       CS_MESSAGE="${message//$'\r'/$'\n'}" CS_BODY="$body" "${check[@]}" scan
     if [[ -n "$message" ]]; then

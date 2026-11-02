@@ -366,6 +366,12 @@ function Test-SarifUpload {
     Out 'sarif-upload' 'true'
 }
 
+# Severities, and below advisory ids, compare by code point as jq compares
+# them in check.sh, so a case difference ranks and sorts the same everywhere.
+function Get-Rank([string]$Severity) {
+    switch -CaseSensitive ($Severity) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } 'None' { 4 } default { 5 } }
+}
+
 # The findings as a Markdown table, most severe first. The cells quote
 # advisory data, so Markdown characters in them are escaped.
 function Format-Cell($Value) {
@@ -373,7 +379,6 @@ function Format-Cell($Value) {
     ($s -replace '[\r\n]+', ' ') -replace '([\\`*_\[\]<>|!#~&])', '\$1'
 }
 function Write-FindingsTable($Log) {
-    $rank = @{ Critical = 0; High = 1; Medium = 2; Low = 3; None = 4 }
     $rows = @()
     foreach ($run in $Log.runs) {
         if (-not $run.PSObject.Properties['results']) { continue }
@@ -384,7 +389,7 @@ function Write-FindingsTable($Log) {
             if (-not $severity) { $severity = 'Unknown' }
             $rows += [pscustomobject]@{
                 Vex      = [bool]($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0)
-                Rank     = if ($rank.ContainsKey("$severity")) { $rank["$severity"] } else { 5 }
+                Rank     = Get-Rank "$severity"
                 Severity = $severity
                 Id       = if ($result.PSObject.Properties['ruleId']) { "$($result.ruleId)" } else { '' }
                 Purl     = & $field 'dependencyPurl'
@@ -400,7 +405,10 @@ function Write-FindingsTable($Log) {
         }
     }
     if ($rows.Count -eq 0) { return }
-    $rows = @($rows | Sort-Object -Property Vex, Rank, Id -CaseSensitive)
+    # A stable sort, as jq's: the row index ends each key and breaks ties.
+    $keys = [string[]]@(for ($i = 0; $i -lt $rows.Count; $i++) { "$([int]$rows[$i].Vex)$($rows[$i].Rank)$($rows[$i].Id)`0$($i.ToString('D10'))" })
+    [Array]::Sort($keys, [StringComparer]::Ordinal)
+    $rows = @($keys | ForEach-Object { $rows[[int]$_.Substring($_.LastIndexOf([char]0) + 1)] })
     $compared = @($rows | Where-Object { $_.Baseline -ne 'not compared' }).Count -gt 0
     $lines = @('', ('| Severity | Advisory | Dependency | Fixed in | ' + $(if ($compared) { 'Baseline | ' }) + 'VEX |'),
         ('| --- | --- | --- | --- | ' + $(if ($compared) { '--- | ' }) + '--- |'))
@@ -415,11 +423,12 @@ function Write-FindingsTable($Log) {
 # suppressed, not in the baseline, and at the threshold or above, where an
 # unknown severity meets every threshold. Returns, for example, "2 new
 # findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories,
-# and no parentheses when no result has a usable advisory id.
+# and no parentheses when no result has a usable advisory id. Ids that differ
+# only in case are two advisories, as in check.sh.
 function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote) {
     $max = switch -CaseSensitive ($FailOn) { 'any' { 4 } 'low' { 3 } 'medium' { 2 } 'high' { 1 } 'critical' { 0 } }
     $count = 0
-    $best = @{}
+    $best = [Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
     foreach ($run in $Log.runs) {
         if (-not $run.PSObject.Properties['results']) { continue }
         foreach ($result in $run.results) {
@@ -427,7 +436,7 @@ function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote
             if ($result.PSObject.Properties['baselineState'] -and "$($result.baselineState)" -ceq 'unchanged') { continue }
             $severity = if ($result.PSObject.Properties['properties'] -and $result.properties -and
                 $result.properties.PSObject.Properties['severity'] -and $null -ne $result.properties.severity) { "$($result.properties.severity)" } else { 'Unknown' }
-            $rank = switch -CaseSensitive ($severity) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } 'None' { 4 } default { 5 } }
+            $rank = Get-Rank $severity
             if ($rank -ne 5 -and $rank -gt $max) { continue }
             $count++
             $id = if ($result.PSObject.Properties['ruleId'] -and $null -ne $result.ruleId) { "$($result.ruleId)" -creplace '[^A-Za-z0-9._:-]', '' } else { '' }

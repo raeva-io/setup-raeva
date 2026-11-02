@@ -438,6 +438,14 @@ for tag in "${variants[@]}"; do
     && ok "$tag: the gate keeps its message without a list" || bad "$tag: gate without a list"
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=0 "${check[@]}" scan
   [[ -z "$(output vuln-failing)" ]] && ok "$tag: a passing scan lists no failing findings" || bad "$tag: failing list after exit 0"
+  # Ids and severities that differ only in case stay apart and sort by code
+  # point, as jq sorts them; a lowercase severity is unknown.
+  sarif="{\"runs\":[{\"results\":[$(r GHSA-abcd-efgh-ijkl High),$(r ghsa-abcd-efgh-ijkl Critical),$(r CVE-x high),$(r b-id Medium),$(r B-id Medium),$(r a-id Medium)]}]}"
+  run env INPUT_VULN=true INPUT_VULN_FAIL_ON=medium SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  [[ "$(output vuln-failing)" == "6 findings at or above 'medium' (ghsa-abcd-efgh-ijkl, GHSA-abcd-efgh-ijkl, B-id, a-id, b-id, and 1 more)" ]] \
+    && ok "$tag: ids that differ in case are two advisories" || bad "$tag: ids that differ in case ($(output vuln-failing))"
+  [[ "$(sed -n 's/^| [^|]* | \([^|]*\) |.*/\1/p' "$t/summary" | tr '\n' ' ')" == 'Advisory --- ghsa-abcd-efgh-ijkl GHSA-abcd-efgh-ijkl B-id a-id b-id CVE-x ' ]] \
+    && ok "$tag: the table orders ids and severities by code point" || bad "$tag: table order"
   # Without a usable advisory id the line names none, and has no "()".
   sarif="{\"runs\":[{\"results\":[$(r '!!' High),{\"properties\":{\"severity\":\"Critical\"}}]}]}"
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan

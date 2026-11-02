@@ -414,7 +414,8 @@ function Write-FindingsTable($Log) {
 # The results raeva's --fail-on counted, for the summary and the gate: not
 # suppressed, not in the baseline, and at the threshold or above, where an
 # unknown severity meets every threshold. Returns, for example, "2 new
-# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
+# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories,
+# and no parentheses when no result has a usable advisory id.
 function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote) {
     $max = switch -CaseSensitive ($FailOn) { 'any' { 4 } 'low' { 3 } 'medium' { 2 } 'high' { 1 } 'critical' { 0 } }
     $count = 0
@@ -438,7 +439,9 @@ function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote
     $keys = [string[]]@($best.Keys | ForEach-Object { "$($best[$_])`t$_" })
     [Array]::Sort($keys, [StringComparer]::Ordinal)
     $ids = @($keys | ForEach-Object { "$Quote$($_.Substring(2))$Quote" })
-    $text = "$count $($New)finding$(if ($count -ne 1) { 's' }) at or above '$FailOn' (" + (($ids | Select-Object -First 5) -join ', ')
+    $text = "$count $($New)finding$(if ($count -ne 1) { 's' }) at or above '$FailOn'"
+    if ($ids.Count -eq 0) { return $text }
+    $text += ' (' + (($ids | Select-Object -First 5) -join ', ')
     if ($ids.Count -gt 5) { $text += ", and $($ids.Count - 5) more" }
     "$text)"
 }

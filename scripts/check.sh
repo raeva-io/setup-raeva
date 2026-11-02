@@ -388,7 +388,8 @@ findings_table() {
 # The results raeva's --fail-on counted, for the summary and the gate: not
 # suppressed, not in the baseline, and at the threshold or above, where an
 # unknown severity meets every threshold. Prints, for example, "2 new
-# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
+# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories,
+# and no parentheses when no result has a usable advisory id.
 failing_findings() { # <SARIF log> <vuln-fail-on> <"new " or empty> <quote>
   jq -r --arg on "$2" --arg new "$3" --arg q "$4" '
     def rank: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4}[tostring] // 5;
@@ -402,9 +403,11 @@ failing_findings() { # <SARIF log> <vuln-fail-on> <"new " or empty> <quote>
     | length as $n
     | [group_by(.id)[] | min_by(.r) | select(.id != "")] | sort_by(.r, .id) | map("\($q)\(.id)\($q)") as $ids
     | select($n > 0)
-    | "\($n) \($new)finding\(if $n == 1 then "" else "s" end) at or above '"'"'\($on)'"'"' ("
-      + ($ids[:5] | join(", "))
-      + (if ($ids | length) > 5 then ", and \(($ids | length) - 5) more" else "" end) + ")"
+    | "\($n) \($new)finding\(if $n == 1 then "" else "s" end) at or above '"'"'\($on)'"'"'"
+      + (if $ids == [] then "" else
+          " (" + ($ids[:5] | join(", "))
+          + (if ($ids | length) > 5 then ", and \(($ids | length) - 5) more" else "" end) + ")"
+        end)
     ' "$1" 2>/dev/null || true
 }
 

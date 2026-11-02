@@ -438,6 +438,15 @@ for tag in "${variants[@]}"; do
     && ok "$tag: the gate keeps its message without a list" || bad "$tag: gate without a list"
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=0 "${check[@]}" scan
   [[ -z "$(output vuln-failing)" ]] && ok "$tag: a passing scan lists no failing findings" || bad "$tag: failing list after exit 0"
+  # Without a usable advisory id the line names none, and has no "()".
+  sarif="{\"runs\":[{\"results\":[$(r '!!' High),{\"properties\":{\"severity\":\"Critical\"}}]}]}"
+  run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  failing=$(output vuln-failing)
+  [[ "$failing" == "2 findings at or above 'high'" ]] && has "$t/summary" "The job fails on 2 findings at or above 'high'." \
+    && ok "$tag: findings without ids are counted without parentheses" || bad "$tag: findings without ids ($failing)"
+  run env VULN_EXIT_CODE=1 VULN_FAILING="$failing" "${check[@]}" gate
+  has "$t/log" "::error title=raeva vuln::The job fails on 2 findings at or above 'high'; see the job summary and the scan output" \
+    && ok "$tag: the gate names findings without ids" || bad "$tag: gate without ids"
 
   # The upload is skipped only when code scanning refuses the job token
   # outside a pull_request run, which may upload with a read-only token.

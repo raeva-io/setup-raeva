@@ -26,15 +26,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Writes $RUNNER_TEMP/settings.xml with a <server> for the repository
-      # id that reads the credentials from REPO_USER and REPO_TOKEN, and
-      # leaves ~/.m2/settings.xml as it is. With -s, raeva and mvn read only
-      # this file, which has no repositories, so declare the repository with
-      # the same id in the POM, where mvn finds it too: one declared only in
-      # a developer's ~/.m2/settings.xml is not seen here. Both ask Maven
-      # Central last, so the private repository gets each public artifact
-      # request first. For raeva, a repository with id central in the project
-      # raeva.toml puts Central first.
+      # Writes $RUNNER_TEMP/settings.xml with a <server> for the
+      # repository id that reads the credentials from REPO_USER and
+      # REPO_TOKEN, and leaves ~/.m2/settings.xml as it is. With -s,
+      # raeva and mvn use this file instead of ~/.m2/settings.xml. It
+      # has no repositories, so declare the repository with the same id
+      # in the POM, where mvn finds it too: one declared only in a
+      # developer's ~/.m2/settings.xml is not seen here. Both ask Maven
+      # Central last, so the private repository gets each public
+      # artifact request first. For raeva, a repository with id central
+      # in the project raeva.toml puts Central first.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin

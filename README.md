@@ -25,6 +25,17 @@ merged lock. When the lock conflicts, run `raeva sync` on the merged POMs
 and `git add raeva.lock`. If your `.gitattributes` has the
 `raeva.lock -merge` line that setup-raeva 1.0.0 suggested, remove it.
 
+`raeva sync` locks the platform it runs on, and the check needs the
+runner's platform in the lock: a lock written only on a Mac fails a Linux
+job with exit 3 (`PLATFORM_MISSING`), in report-only mode too. When developers write the lock on a
+Mac and CI runs Linux, lock both once:
+
+```sh
+raeva sync --platforms linux-x86_64,macos-aarch64
+```
+
+Later syncs keep the platforms the lock records.
+
 Then keep your Maven build as it is and add a workflow that checks the lock
 (`examples/ci.yml` has both jobs):
 
@@ -71,8 +82,7 @@ the job.
 
 Report-only does not fail on the lock, so it does not stop a stale lock from
 merging. Use it while you adopt raeva, then remove `check-mode` so that lock
-changes and a missing lock fail the job. Its default is `blocking`. The check covers every platform the lock records, whatever the
-runner's OS, so one Linux job checks a lock written on a Mac. On a pull
+changes and a missing lock fail the job. Its default is `blocking`. On a pull
 request, the job summary lists what the pull request changes in the lock.
 The `merge_group` trigger lets the check run in a merge queue. Add bot lock
 commits before you make a blocking check required (see "Bot pull
@@ -108,9 +118,12 @@ set, the active profiles, or the `-D` and `-P` options. The error annotation
 lists the changes and raeva's hint. A POM edit that resolves to the same lock
 passes, and so does a version bump of the reactor's own modules, such as a
 `mvn versions:set` or release commit, when nothing else changes. A broken or
-conflicted lock fails with exit 3 (`LOCKFILE_INVALID`), and a platform the
-`platforms` input names but the lock lacks fails with exit 3
-(`PLATFORM_MISSING`).
+conflicted lock fails with exit 3 (`LOCKFILE_INVALID`). With the
+`platforms` input empty, the check covers every platform the lock records
+and fails with exit 3 (`PLATFORM_MISSING`) when the runner's platform is not
+among them. With the input set, it covers only the platforms the input
+names and fails with exit 3 when the lock lacks one. Report-only fails on
+these errors too.
 
 raeva evaluates POM profiles with the runner's JDK. When a profile activates
 by JDK version and CI builds on several JDKs, list them in `raeva.toml` and

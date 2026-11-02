@@ -50,7 +50,8 @@ inputs:
     description: >-
       Platforms for the frozen check and relock, comma separated
       (linux-x86_64,macos-aarch64). Empty means every platform the lock
-      records.
+      records, and the frozen check then also needs the runner's platform in
+      the lock.
     default: ""
   settings:
     description: >-

@@ -182,6 +182,19 @@ function Get-SyncCommand {
     ($words | ForEach-Object { if ($_ -cmatch '^[A-Za-z0-9_./=,:+@-]+$') { $_ } else { "'" + $_.Replace("'", "''") + "'" } }) -join ' '
 }
 
+# The fix command for the summary of a stale lock, with what it leaves out.
+function Write-FixSummary {
+    Summary "`nTo fix it, run this on the branch and commit raeva.lock:"
+    Fenced (Get-SyncCommand)
+    if ($env:INPUT_PROPERTIES) {
+        Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
+    }
+    if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
+        $settings = $env:INPUT_SETTINGS.Replace('`', '')
+        Summary "`nThis job reads the settings file ``$settings``; run it with a settings file that has the same repositories and profiles."
+    }
+}
+
 # The name of an artifact with one lock diff of this working directory.
 # Jobs whose name matches write the same diff, so a later upload may replace
 # an earlier one; the hash keeps other roots, options, and for the proposed
@@ -212,7 +225,6 @@ function Invoke-Proposed {
     }
     $lock = Join-Path $workdir 'raeva.lock'
     if (-not (Test-Path -LiteralPath $lock)) { return }
-    Out 'fix-command' (Get-SyncCommand)
     Copy-Item -LiteralPath $lock -Destination (Join-Path $runDir 'committed.lock')
     $script:committed = Join-Path $runDir 'committed.lock'
     $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms $committed }
@@ -229,15 +241,7 @@ function Invoke-Proposed {
         Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The check cannot complete."
         if ($checkMode -eq 'report-only') { exit $code }
     } else {
-        Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:"
-        Fenced (Get-SyncCommand)
-        if ($env:INPUT_PROPERTIES) {
-            Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
-        }
-        if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
-            $settings = $env:INPUT_SETTINGS.Replace('`', '')
-            Summary "`nThis job reads the settings file ``$settings``; run it with a settings file that has the same repositories and profiles."
-        }
+        Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock."
         $diffOut = Join-Path $runDir 'diff.out'
         $diffErr = Join-Path $runDir 'diff.err'
         $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $committed, $lock) $diffOut $diffErr
@@ -307,15 +311,25 @@ function Invoke-Frozen {
     if ($ecode -ceq 'LOCKFILE_INVALID' -and $message -like '*schema version*') {
         $hints = "If a newer raeva wrote raeva.lock, raise the ``version`` input to that release.`n$hints"
     }
+    # raeva's hint names a plain `raeva sync`; this job's options can change
+    # the lock it writes.
+    $fix = ''
+    if ($code -eq 7) {
+        $fix = Get-SyncCommand
+        Out 'fix-command' $fix
+    }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
     # Report-only fails neither on lock changes nor on a missing lock, so a
     # project can add the workflow before it commits raeva.lock.
     $soft = $checkMode -eq 'report-only' -and ($code -eq 7 -or $ecode -ceq 'LOCKFILE_MISSING')
     $level = if ($soft) { 'warning' } else { 'error' }
-    Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
+    $note = "$message`n$hints"
+    if ($fix) { $note += "`nWith this job's options: $fix" }
+    Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg $note)"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
     Fenced "$message`n`n$hints"
     Write-Warnings $envelope 'sync --frozen'
+    if ($fix) { Write-FixSummary }
     if ($soft -and $code -ne 7) {
         Summary "`nReport-only mode: a missing lock does not fail this job."
         return

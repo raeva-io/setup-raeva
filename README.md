@@ -345,10 +345,12 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    annotation on `raeva.lock` with the error code, the changes, and raeva's
    hints. raeva's warnings become one annotation per warning code, except
    `HTTP_REPO_BLOCKED`, `TRANSITIVE_REPO_DROPPED`, and `WEAK_HASH_FALLBACK`,
-   which only the job summary lists. With `check-mode: report-only`, a stale
+   which only the job summary lists. A stale lock's annotation and summary
+   also give the fix command with this job's options, and the `fix-command`
+   output holds it. With `check-mode: report-only`, a stale
    or missing lock warns instead; other errors still fail. With report-only,
-   and on a bot's pull request, the summary shows the proposed lock diff and
-   a fix command, and the full diff goes to an artifact,
+   and on a bot's pull request, the summary shows the proposed lock diff,
+   and the full diff goes to an artifact,
    `raeva-lock-proposed-` followed by the working directory and a hash.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
    commit's `raeva.lock` with this one, writes `raeva lock diff` to the job

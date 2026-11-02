@@ -284,6 +284,19 @@ for tag in "${variants[@]}"; do
     && ok "$tag: proposed diff output" || bad "$tag: proposed diff output"
   has "$t/summary" 'gson 2.13.2 -> 2.13.1' && has "$t/summary" "$(output fix-command)" \
     && ok "$tag: summary has diff and fix command" || bad "$tag: summary has diff and fix command"
+  # A blocking check on a person's pull request writes no proposed lock, and
+  # still names the command with this job's options.
+  run env INPUT_CHECK=true INPUT_PROFILES=ci INPUT_PROPERTIES=token=private-test-value \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" "${check[@]}" scan
+  expect "$tag: a stale lock fails a person's pull request" 7 $?
+  fix=$(output fix-command)
+  [[ "$fix" == *' sync --activate-profiles=ci '*token=* && "$fix" != *private-test-value* ]] \
+    && ok "$tag: a blocking stale lock sets fix-command" || bad "$tag: blocking fix-command is '$fix'"
+  grep '^::error file=' "$t/log" | grep -qF "%0AWith this job's options: $fix" \
+    && ok "$tag: the annotation names the fix command" || bad "$tag: the annotation names the fix command"
+  has "$t/summary" "$fix" && has "$t/summary" 'Replace each `<value>`' && ! has "$t/summary" 'Proposed raeva.lock' \
+    && ! has "$t/summary" private-test-value && ok "$tag: the summary names the fix command without a proposed lock" \
+    || bad "$tag: blocking summary fix command"
   cmp -s "$t/project/raeva.lock" "$t/original.lock" && ok "$tag: committed lock stays unchanged" || bad "$tag: committed lock changed"
   [[ -z "$(find "$t/temp" -name committed.lock -print)" ]] && ok "$tag: puts the committed lock back" || bad "$tag: committed lock copy remains"
   for code in 3 4; do
@@ -380,6 +393,8 @@ for tag in "${variants[@]}"; do
   expect "$tag: a scan without a lock still fails at the gate" 3 $?
   run env INPUT_CHECK=true FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
   expect "$tag: blocking fails without a lock" 3 $?
+  [[ -z "$(output fix-command)" ]] && ! has "$t/log" "this job's options" \
+    && ok "$tag: only a stale lock gets the fix command" || bad "$tag: fix command for a missing lock"
 
   # A crash, a kill, or a binary that cannot load writes no JSON envelope.
   # $(...) drops trailing newlines, so the blank lines that end the output

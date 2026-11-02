@@ -118,6 +118,18 @@ sync_command() {
   printf '%s' "${line% }"
 }
 
+# The fix command for the summary of a stale lock, with what it leaves out.
+fix_summary() {
+  printf '\nTo fix it, run this on the branch and commit raeva.lock:\n' >> "$summary"
+  fenced "$(sync_command)"
+  if [[ -n "${INPUT_PROPERTIES:-}" ]]; then
+    printf '\nReplace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.\n' >> "$summary"
+  fi
+  if [[ "${INPUT_SETTINGS:-}" == /* ]]; then
+    printf '\nThis job reads the settings file `%s`; run it with a settings file that has the same repositories and profiles.\n' "${INPUT_SETTINGS//\`/}" >> "$summary"
+  fi
+}
+
 # One annotation per warning code, as raeva's own text summary prints them:
 # the first warning with its context, and how many more share the code.
 # Only the job summary lists HTTP_REPO_BLOCKED, for an http: repository that
@@ -233,7 +245,6 @@ proposed() {
   fi
   [[ -f "$workdir/raeva.lock" ]] || return 0
   local platforms="${INPUT_PLATFORMS:-}" code=0
-  out fix-command "$(sync_command)"
   cp -p "$workdir/raeva.lock" "$run/committed.lock" || return $?
   committed="$run/committed.lock"
   trap restore_lock EXIT
@@ -247,14 +258,7 @@ proposed() {
   if [[ $code -ne 0 ]]; then
     printf '\n`raeva sync` could not write a proposed lock (exit %s); see the step log. The check cannot complete.\n' "$code" >> "$summary"
   else
-    printf '\nThis is the lock `raeva sync` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:\n' >> "$summary"
-    fenced "$(sync_command)"
-    if [[ -n "${INPUT_PROPERTIES:-}" ]]; then
-      printf '\nReplace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.\n' >> "$summary"
-    fi
-    if [[ "${INPUT_SETTINGS:-}" == /* ]]; then
-      printf '\nThis job reads the settings file `%s`; run it with a settings file that has the same repositories and profiles.\n' "${INPUT_SETTINGS//\`/}" >> "$summary"
-    fi
+    printf '\nThis is the lock `raeva sync` writes for this checkout. It is not committed; later steps use the committed lock.\n' >> "$summary"
     diff_summary "" "$committed" "$workdir/raeva.lock" proposed || code=$?
   fi
   return "$code"
@@ -286,7 +290,7 @@ frozen() {
     warnings "$json" "sync --frozen"
     return 0
   fi
-  local err ecode hints=""
+  local err ecode hints="" fix=""
   ecode=$(json_field code "$json")
   err=$(json_field error "$json")
   if [[ -z "$err" ]]; then
@@ -303,14 +307,23 @@ frozen() {
   if [[ "$ecode" == LOCKFILE_INVALID ]] && grep -qiF "schema version" <<< "$err"; then
     hints='If a newer raeva wrote raeva.lock, raise the `version` input to that release.'$'\n'"$hints"
   fi
+  # raeva's hint names a plain `raeva sync`; this job's options can change
+  # the lock it writes.
+  if [[ $code -eq 7 ]]; then
+    fix=$(sync_command)
+    out fix-command "$fix"
+  fi
   # Report-only fails neither on lock changes nor on a missing lock, so a
   # project can add the workflow before it commits raeva.lock.
   local level=error soft=false
   [[ "$check_mode" != report-only || ( $code -ne 7 && "$ecode" != LOCKFILE_MISSING ) ]] || level=warning soft=true
-  annotate "$level" "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" "$err"$'\n'"$hints"
+  local note="$err"$'\n'"$hints"
+  [[ -z "$fix" ]] || note+=$'\n'"With this job's options: $fix"
+  annotate "$level" "$lock_path" "raeva sync --frozen (exit $code${ecode:+, $ecode})" "$note"
   printf '### raeva\n\n`raeva sync --frozen` failed with exit %s (%s).\n' "$code" "${ecode:-no code}" >> "$summary"
   fenced "$err"$'\n\n'"$hints"
   warnings "$json" "sync --frozen"
+  [[ -z "$fix" ]] || fix_summary
   if [[ "$soft" == true && $code -ne 7 ]]; then
     printf '\nReport-only mode: a missing lock does not fail this job.\n' >> "$summary"
     return 0

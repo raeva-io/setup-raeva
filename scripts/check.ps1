@@ -529,14 +529,14 @@ function Invoke-Vuln {
     Out 'sarif-category' (Get-SarifCategory)
     Out 'vuln-findings' $count
     $note = if ($suppressed -gt 0) { ", and $suppressed suppressed by VEX" } else { '' }
-    $gating = if ($failOn -eq 'never') { 'findings do not fail the job (vuln-fail-on: never)' } else { "findings at $failOn or above fail the job" }
-    if ($baseLock -and $failOn -ne 'never') { $gating = "new findings at $failOn or above fail the job" }
+    $gating = if ([string]::Equals($failOn, 'never')) { 'findings do not fail the job (vuln-fail-on: never)' } else { "findings at $failOn or above fail the job" }
+    if ($baseLock -and -not [string]::Equals($failOn, 'never')) { $gating = "new findings at $failOn or above fail the job" }
     if ($code -notin 0, 1) {
         Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s)$note in the partial SARIF log."
     } else {
         Summary "`n``raeva vuln``: $count finding(s)$note; $gating."
     }
-    if ($code -eq 1 -and $failOn -ne 'never') {
+    if ($code -eq 1 -and -not [string]::Equals($failOn, 'never')) {
         $new = if ($baseLock) { 'new ' } else { '' }
         $failing = Get-FailingFindings $log $failOn $new ''
         if ($failing) {
@@ -617,7 +617,7 @@ function Read-PrBaseline {
 function Invoke-Gate {
     $code = if ($env:VULN_EXIT_CODE) { [int]$env:VULN_EXIT_CODE } else { 0 }
     $failOn = if ($env:INPUT_VULN_FAIL_ON) { $env:INPUT_VULN_FAIL_ON } else { 'high' }
-    if ($code -eq 1 -and $failOn -ne 'never') {
+    if ($code -eq 1 -and -not [string]::Equals($failOn, 'never')) {
         if ($env:VULN_FAILING) {
             Write-Output "::error title=raeva vuln::$(EscMsg "The job fails on $env:VULN_FAILING"); see the job summary and the scan output"
         } else {

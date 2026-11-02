@@ -366,10 +366,13 @@ function Test-SarifUpload {
     Out 'sarif-upload' 'true'
 }
 
-# Severities, and below advisory ids, compare by code point as jq compares
-# them in check.sh, so a case difference ranks and sorts the same everywhere.
+# SARIF fields compare as jq compares them in check.sh: by code point. The
+# -eq, -ceq and switch operators compare by culture, so a case difference or
+# an ignorable character such as a soft hyphen would rank or sort otherwise.
+function Test-OneOf([string]$Value, [string[]]$Allowed) { [Array]::IndexOf($Allowed, $Value) -ge 0 }
 function Get-Rank([string]$Severity) {
-    switch -CaseSensitive ($Severity) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } 'None' { 4 } default { 5 } }
+    $rank = [Array]::IndexOf([string[]]@('Critical', 'High', 'Medium', 'Low', 'None'), $Severity)
+    if ($rank -lt 0) { 5 } else { $rank }
 }
 
 # The findings as a Markdown table, most severe first. The cells quote
@@ -386,7 +389,7 @@ function Write-FindingsTable($Log) {
             $props = if ($result.PSObject.Properties['properties']) { $result.properties } else { $null }
             $field = { param($name) if ($props -and $props.PSObject.Properties[$name]) { $props.$name } else { $null } }
             $severity = & $field 'severity'
-            if (-not $severity) { $severity = 'Unknown' }
+            if ($null -eq $severity -or ($severity -is [bool] -and -not $severity)) { $severity = 'Unknown' }
             $rows += [pscustomobject]@{
                 Vex      = [bool]($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0)
                 Rank     = Get-Rank "$severity"
@@ -394,26 +397,25 @@ function Write-FindingsTable($Log) {
                 Id       = if ($result.PSObject.Properties['ruleId']) { "$($result.ruleId)" } else { '' }
                 Purl     = & $field 'dependencyPurl'
                 Fixed    = & $field 'fixedVersion'
-                Baseline = if ($result.PSObject.Properties['baselineState']) {
-                    switch ($result.baselineState) {
-                        'new' { 'new' }
-                        'unchanged' { 'existing' }
-                        default { 'not compared' }
-                    }
-                } else { 'not compared' }
+                State    = if ($result.PSObject.Properties['baselineState']) { "$($result.baselineState)" } else { '' }
             }
         }
     }
     if ($rows.Count -eq 0) { return }
-    # A stable sort, as jq's: the row index ends each key and breaks ties.
-    $keys = [string[]]@(for ($i = 0; $i -lt $rows.Count; $i++) { "$([int]$rows[$i].Vex)$($rows[$i].Rank)$($rows[$i].Id)`0$($i.ToString('D10'))" })
+    # UTF-8 bytes in hex order as code points do, and a space sorts below every
+    # hex digit, so an id sorts before the ids it begins. The row index ends
+    # each key, so the sort is stable, as jq's is.
+    $keys = [string[]]@(for ($i = 0; $i -lt $rows.Count; $i++) {
+            $id = [Convert]::ToHexString([Text.Encoding]::UTF8.GetBytes($rows[$i].Id))
+            "$([int]$rows[$i].Vex)$($rows[$i].Rank)$id $i"
+        })
     [Array]::Sort($keys, [StringComparer]::Ordinal)
-    $rows = @($keys | ForEach-Object { $rows[[int]$_.Substring($_.LastIndexOf([char]0) + 1)] })
-    $compared = @($rows | Where-Object { $_.Baseline -ne 'not compared' }).Count -gt 0
+    $rows = @($keys | ForEach-Object { $rows[[int]$_.Substring($_.LastIndexOf(' ') + 1)] })
+    $compared = @($rows | Where-Object { $_.State.Length -gt 0 }).Count -gt 0
     $lines = @('', ('| Severity | Advisory | Dependency | Fixed in | ' + $(if ($compared) { 'Baseline | ' }) + 'VEX |'),
         ('| --- | --- | --- | --- | ' + $(if ($compared) { '--- | ' }) + '--- |'))
     foreach ($row in ($rows | Select-Object -First 100)) {
-        $lines += "| $(Format-Cell $row.Severity) | $(Format-Cell $row.Id) | $(Format-Cell $row.Purl) | $(Format-Cell $row.Fixed) | " + $(if ($compared) { "$($row.Baseline) | " }) + "$(if ($row.Vex) { 'suppressed' }) |"
+        $lines += "| $(Format-Cell $row.Severity) | $(Format-Cell $row.Id) | $(Format-Cell $row.Purl) | $(Format-Cell $row.Fixed) | " + $(if ($compared) { $(if ([string]::Equals($row.State, 'new')) { 'new' } elseif ([string]::Equals($row.State, 'unchanged')) { 'existing' } else { 'not compared' }) + ' | ' }) + "$(if ($row.Vex) { 'suppressed' }) |"
     }
     if ($rows.Count -gt 100) { $lines += @('', "... and $($rows.Count - 100) more in the SARIF log.") }
     Summary ($lines -join "`n")
@@ -433,7 +435,7 @@ function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote
         if (-not $run.PSObject.Properties['results']) { continue }
         foreach ($result in $run.results) {
             if ($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0) { continue }
-            if ($result.PSObject.Properties['baselineState'] -and "$($result.baselineState)" -ceq 'unchanged') { continue }
+            if ($result.PSObject.Properties['baselineState'] -and [string]::Equals("$($result.baselineState)", 'unchanged')) { continue }
             $severity = if ($result.PSObject.Properties['properties'] -and $result.properties -and
                 $result.properties.PSObject.Properties['severity'] -and $null -ne $result.properties.severity) { "$($result.properties.severity)" } else { 'Unknown' }
             $rank = Get-Rank $severity
@@ -457,7 +459,7 @@ function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote
 
 function Invoke-Vuln {
     $failOn = if ($env:INPUT_VULN_FAIL_ON) { $env:INPUT_VULN_FAIL_ON } else { 'high' }
-    if ($failOn -notin @('any', 'low', 'medium', 'high', 'critical', 'never')) {
+    if (-not (Test-OneOf $failOn @('any', 'low', 'medium', 'high', 'critical', 'never'))) {
         Write-Output '::error title=setup-raeva::vuln-fail-on must be any, low, medium, high, critical, or never'
         exit 2
     }
@@ -625,7 +627,7 @@ function Invoke-Gate {
 try {
     switch ($Mode) {
         'scan' {
-            if ($checkMode -notin @('blocking', 'report-only')) {
+            if (-not (Test-OneOf $checkMode @('blocking', 'report-only'))) {
                 Write-Output '::error title=setup-raeva::check-mode must be blocking or report-only'
                 exit 2
             }

@@ -452,13 +452,14 @@ for tag in "${variants[@]}"; do
     && ok "$tag: the table orders ids and severities by code point" || bad "$tag: table order"
   # The same for characters that culture comparison ignores or orders by
   # UTF-16 code unit: a soft hyphen, NUL, U+E000 and U+10000. An id sorts
-  # before the ids it begins, and equal ids keep their order.
+  # before the ids it begins, and equal ids keep their order, here at row 3
+  # and row 10.
   p() { printf '{"ruleId":"%s","properties":{"severity":"High","dependencyPurl":"%s"}}' "$1" "$2"; }
-  sarif="{\"runs\":[{\"results\":[$(p '\ud800\udc00' p5),$(p '\ue000' p4),$(p 'a\u0000' p3),$(p a p1),$(p a p2),$(r CVE-soft 'Hi\u00adgh'),$(r CVE-u Critical ',"baselineState":"UNCHANGED"')]}]}"
+  sarif="{\"runs\":[{\"results\":[$(p '\ud800\udc00' p5),$(p '\ue000' p4),$(p 'a\u0000' p3),$(p a p1),$(r CVE-soft 'Hi\u00adgh'),$(r CVE-u Critical ',"baselineState":"UNCHANGED"'),$(p z q),$(p z q),$(p z q),$(p z q),$(p a p2)]}]}"
   run env INPUT_VULN=true INPUT_VULN_FAIL_ON=critical SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
   [[ "$(output vuln-failing)" == "2 findings at or above 'critical' (CVE-u, CVE-soft)" ]] \
     && ok "$tag: severities and baseline states compare by code point" || bad "$tag: ordinal severity ($(output vuln-failing))"
-  [[ "$(sed -n 's/^| [^|]* | [^|]* | \([^|]*\) |.*/\1/p' "$t/summary" | tr '\n' ' ')" == 'Dependency ---  p1 p2 p3 p4 p5  ' ]] \
+  [[ "$(sed -n 's/^| [^|]* | [^|]* | \([^|]*\) |.*/\1/p' "$t/summary" | tr '\n' ' ')" == 'Dependency ---  p1 p2 p3 q q q q p4 p5  ' ]] \
     && has "$t/summary" '| CVE-u |  |  | not compared |  |' && ok "$tag: the table sorts ids by code point, stably" || bad "$tag: code point order"
   for input in INPUT_VULN_FAIL_ON=High INPUT_CHECK_MODE=Blocking; do
     run env INPUT_VULN=true "$input" "${check[@]}" scan

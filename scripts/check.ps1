@@ -416,7 +416,7 @@ function Write-FindingsTable($Log) {
     # each key, so the sort is stable, as jq's is.
     $keys = [string[]]@(for ($i = 0; $i -lt $rows.Count; $i++) {
             $id = [Convert]::ToHexString([Text.Encoding]::UTF8.GetBytes($rows[$i].Id))
-            "$([int]$rows[$i].Vex)$($rows[$i].Rank)$id $i"
+            "$([int]$rows[$i].Vex)$($rows[$i].Rank)$id $($i.ToString('D10'))"
         })
     [Array]::Sort($keys, [StringComparer]::Ordinal)
     $rows = @($keys | ForEach-Object { $rows[[int]$_.Substring($_.LastIndexOf(' ') + 1)] })

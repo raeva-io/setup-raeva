@@ -12,6 +12,14 @@
 # - Tier 3: no workflow. A maintainer runs `raeva sync` on the branch. The
 #   failed check's job summary shows the lock it would write.
 #
+# This workflow relocks only Dependabot's pull requests. For hosted Renovate
+# too, accept renovate[bot] in the relock job's if: and set Renovate's
+# gitIgnoredAuthors (README, "Bot pull requests").
+#
+# Dependabot updates the setup-raeva uses: line but not its version input.
+# Raise version by hand, or with the Renovate regex manager in the README
+# ("Dependency updates").
+#
 # The relock job runs raeva with a read-only token. The push job has write
 # access but runs no raeva and no project code: it commits only the files
 # that the relock jobs' artifacts hold, after checking that each one is the
@@ -70,7 +78,7 @@ jobs:
       # Dependabot secrets, as in private.yml (README, "Bot pull requests").
       - uses: raeva-io/setup-raeva@f944e5a93055fee7320fbbb9026b1e4fe7ee4df7 # v1.0.0
         with:
-          version: 0.5.0
+          version: 0.5.1
           relock: true
           working-directory: ${{ matrix.root }}
       - id: diff
@@ -162,6 +170,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TOKEN: ${{ steps.app.outputs.token || secrets.RELOCK_TOKEN || github.token }}
+          DEFAULT_TOKEN: ${{ !steps.app.outputs.token && !secrets.RELOCK_TOKEN }}
         run: |
           set -euo pipefail
           # Only the push sees the token, not git filters run by add or commit.
@@ -235,4 +244,11 @@ jobs:
               exit 0
             fi
             exit 1
+          fi
+          # Tier 2: GitHub does not start the runs of a commit pushed with
+          # the default token.
+          if [[ "${DEFAULT_TOKEN:-}" == true ]]; then
+            note="Pushed the lock commit with the default token, so its workflow runs wait as action_required: approve them in the Actions tab, or set up Tier 1 (README, \"Bot pull requests\")."
+            echo "::notice::$note"
+            echo "$note" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi

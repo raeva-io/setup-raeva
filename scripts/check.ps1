@@ -182,6 +182,19 @@ function Get-SyncCommand {
     ($words | ForEach-Object { if ($_ -cmatch '^[A-Za-z0-9_./=,:+@-]+$') { $_ } else { "'" + $_.Replace("'", "''") + "'" } }) -join ' '
 }
 
+# The fix command for the summary of a stale lock, with what it leaves out.
+function Write-FixSummary {
+    Summary "`nTo fix it, run this on the branch and commit raeva.lock:"
+    Fenced (Get-SyncCommand)
+    if ($env:INPUT_PROPERTIES) {
+        Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
+    }
+    if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
+        $settings = $env:INPUT_SETTINGS.Replace('`', '')
+        Summary "`nThis job reads the settings file ``$settings``; run it with a settings file that has the same repositories and profiles."
+    }
+}
+
 # The name of an artifact with one lock diff of this working directory.
 # Jobs whose name matches write the same diff, so a later upload may replace
 # an earlier one; the hash keeps other roots, options, and for the proposed
@@ -212,7 +225,6 @@ function Invoke-Proposed {
     }
     $lock = Join-Path $workdir 'raeva.lock'
     if (-not (Test-Path -LiteralPath $lock)) { return }
-    Out 'fix-command' (Get-SyncCommand)
     Copy-Item -LiteralPath $lock -Destination (Join-Path $runDir 'committed.lock')
     $script:committed = Join-Path $runDir 'committed.lock'
     $platforms = if ($env:INPUT_PLATFORMS) { $env:INPUT_PLATFORMS } else { Get-LockPlatforms $committed }
@@ -229,15 +241,7 @@ function Invoke-Proposed {
         Summary "`n``raeva sync`` could not write a proposed lock (exit $code); see the step log. The check cannot complete."
         if ($checkMode -eq 'report-only') { exit $code }
     } else {
-        Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock. To fix it, run this on the branch and commit raeva.lock:"
-        Fenced (Get-SyncCommand)
-        if ($env:INPUT_PROPERTIES) {
-            Summary ("`n" + 'Replace each `<value>` with the Maven property value used by this job. Property values are omitted from this command.')
-        }
-        if ($env:INPUT_SETTINGS -and [IO.Path]::IsPathRooted($env:INPUT_SETTINGS)) {
-            $settings = $env:INPUT_SETTINGS.Replace('`', '')
-            Summary "`nThis job reads the settings file ``$settings``; run it with a settings file that has the same repositories and profiles."
-        }
+        Summary "`nThis is the lock ``raeva sync`` writes for this checkout. It is not committed; later steps use the committed lock."
         $diffOut = Join-Path $runDir 'diff.out'
         $diffErr = Join-Path $runDir 'diff.err'
         $diffCode = Invoke-Raeva @('-q', '-C', $workdir, 'lock', 'diff', $committed, $lock) $diffOut $diffErr
@@ -307,15 +311,25 @@ function Invoke-Frozen {
     if ($ecode -ceq 'LOCKFILE_INVALID' -and $message -like '*schema version*') {
         $hints = "If a newer raeva wrote raeva.lock, raise the ``version`` input to that release.`n$hints"
     }
+    # raeva's hint names a plain `raeva sync`; this job's options can change
+    # the lock it writes.
+    $fix = ''
+    if ($code -eq 7) {
+        $fix = Get-SyncCommand
+        Out 'fix-command' $fix
+    }
     $title = "raeva sync --frozen (exit $code$(if ($ecode) { ", $ecode" }))"
     # Report-only fails neither on lock changes nor on a missing lock, so a
     # project can add the workflow before it commits raeva.lock.
     $soft = $checkMode -eq 'report-only' -and ($code -eq 7 -or $ecode -ceq 'LOCKFILE_MISSING')
     $level = if ($soft) { 'warning' } else { 'error' }
-    Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg "$message`n$hints")"
+    $note = "$message`n$hints"
+    if ($fix) { $note += "`nWith this job's options: $fix" }
+    Write-Output "::$level file=$(EscProp $lockPath),title=$(EscProp $title)::$(EscMsg $note)"
     Summary "### raeva`n`n``raeva sync --frozen`` failed with exit $code ($(if ($ecode) { $ecode } else { 'no code' }))."
     Fenced "$message`n`n$hints"
     Write-Warnings $envelope 'sync --frozen'
+    if ($fix) { Write-FixSummary }
     if ($soft -and $code -ne 7) {
         Summary "`nReport-only mode: a missing lock does not fail this job."
         return
@@ -352,18 +366,36 @@ function Test-SarifUpload {
         $response = Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60 -Uri "$api/repos/$env:GITHUB_REPOSITORY/code-scanning/alerts?per_page=1" `
             -Headers @{ Authorization = "Bearer $uploadToken"; Accept = 'application/vnd.github+json' }
         $status = [int]$response.StatusCode
-        if ($status -eq 403) { try { $why = "$(($response.Content | ConvertFrom-Json).message)" } catch { } }
+        if ($status -eq 403) {
+            try {
+                $message = ($response.Content | ConvertFrom-Json).message
+                if ($message -is [string]) { $why = $message }
+            } catch { }
+        }
     } catch { }
     $cause = if ($status -ne 403) { '' }
         elseif ($why -match 'must be enabled|not enabled') { 'A private repository needs GitHub Code Security.' }
         elseif ("$env:GITHUB_EVENT_NAME" -cne 'pull_request' -and $why -like '*Resource not accessible by integration*') { 'Outside a pull_request run, the upload needs security-events: write.' }
         else { '' }
     if ($cause) {
-        if ($why.Length -gt 200) { $why = $why.Substring(0, 200) }
+        # 200 code points, as jq counts them, without the newlines that
+        # command substitution drops in check.sh.
+        $end = 0
+        for ($n = 0; $n -lt 200 -and $end -lt $why.Length; $n++) { $end += if ([char]::IsSurrogatePair($why, $end)) { 2 } else { 1 } }
+        $why = $why.Substring(0, $end).TrimEnd("`n")
         Write-Output "::notice title=setup-raeva::The SARIF log is not uploaded: code scanning answered HTTP 403 ($(EscMsg $why)). $cause The findings are in the job summary; sarif-upload: false skips this check."
         return
     }
     Out 'sarif-upload' 'true'
+}
+
+# SARIF fields compare as jq compares them in check.sh: by code point. The
+# -eq, -ceq and switch operators compare by culture, so a case difference or
+# an ignorable character such as a soft hyphen would rank or sort otherwise.
+function Test-OneOf([string]$Value, [string[]]$Allowed) { [Array]::IndexOf($Allowed, $Value) -ge 0 }
+function Get-Rank([string]$Severity) {
+    $rank = [Array]::IndexOf([string[]]@('Critical', 'High', 'Medium', 'Low', 'None'), $Severity)
+    if ($rank -lt 0) { 5 } else { $rank }
 }
 
 # The findings as a Markdown table, most severe first. The cells quote
@@ -373,7 +405,6 @@ function Format-Cell($Value) {
     ($s -replace '[\r\n]+', ' ') -replace '([\\`*_\[\]<>|!#~&])', '\$1'
 }
 function Write-FindingsTable($Log) {
-    $rank = @{ Critical = 0; High = 1; Medium = 2; Low = 3; None = 4 }
     $rows = @()
     foreach ($run in $Log.runs) {
         if (-not $run.PSObject.Properties['results']) { continue }
@@ -381,31 +412,33 @@ function Write-FindingsTable($Log) {
             $props = if ($result.PSObject.Properties['properties']) { $result.properties } else { $null }
             $field = { param($name) if ($props -and $props.PSObject.Properties[$name]) { $props.$name } else { $null } }
             $severity = & $field 'severity'
-            if (-not $severity) { $severity = 'Unknown' }
+            if ($null -eq $severity -or ($severity -is [bool] -and -not $severity)) { $severity = 'Unknown' }
             $rows += [pscustomobject]@{
                 Vex      = [bool]($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0)
-                Rank     = if ($rank.ContainsKey("$severity")) { $rank["$severity"] } else { 5 }
+                Rank     = Get-Rank "$severity"
                 Severity = $severity
                 Id       = if ($result.PSObject.Properties['ruleId']) { "$($result.ruleId)" } else { '' }
                 Purl     = & $field 'dependencyPurl'
                 Fixed    = & $field 'fixedVersion'
-                Baseline = if ($result.PSObject.Properties['baselineState']) {
-                    switch ($result.baselineState) {
-                        'new' { 'new' }
-                        'unchanged' { 'existing' }
-                        default { 'not compared' }
-                    }
-                } else { 'not compared' }
+                State    = if ($result.PSObject.Properties['baselineState']) { "$($result.baselineState)" } else { '' }
             }
         }
     }
     if ($rows.Count -eq 0) { return }
-    $rows = @($rows | Sort-Object -Property Vex, Rank, Id -CaseSensitive)
-    $compared = @($rows | Where-Object { $_.Baseline -ne 'not compared' }).Count -gt 0
+    # UTF-8 bytes in hex order as code points do, and a space sorts below every
+    # hex digit, so an id sorts before the ids it begins. The row index ends
+    # each key, so the sort is stable, as jq's is.
+    $keys = [string[]]@(for ($i = 0; $i -lt $rows.Count; $i++) {
+            $id = [Convert]::ToHexString([Text.Encoding]::UTF8.GetBytes($rows[$i].Id))
+            "$([int]$rows[$i].Vex)$($rows[$i].Rank)$id $($i.ToString('D10'))"
+        })
+    [Array]::Sort($keys, [StringComparer]::Ordinal)
+    $rows = @($keys | ForEach-Object { $rows[[int]$_.Substring($_.LastIndexOf(' ') + 1)] })
+    $compared = @($rows | Where-Object { $_.State.Length -gt 0 }).Count -gt 0
     $lines = @('', ('| Severity | Advisory | Dependency | Fixed in | ' + $(if ($compared) { 'Baseline | ' }) + 'VEX |'),
         ('| --- | --- | --- | --- | ' + $(if ($compared) { '--- | ' }) + '--- |'))
     foreach ($row in ($rows | Select-Object -First 100)) {
-        $lines += "| $(Format-Cell $row.Severity) | $(Format-Cell $row.Id) | $(Format-Cell $row.Purl) | $(Format-Cell $row.Fixed) | " + $(if ($compared) { "$($row.Baseline) | " }) + "$(if ($row.Vex) { 'suppressed' }) |"
+        $lines += "| $(Format-Cell $row.Severity) | $(Format-Cell $row.Id) | $(Format-Cell $row.Purl) | $(Format-Cell $row.Fixed) | " + $(if ($compared) { $(if ([string]::Equals($row.State, 'new')) { 'new' } elseif ([string]::Equals($row.State, 'unchanged')) { 'existing' } else { 'not compared' }) + ' | ' }) + "$(if ($row.Vex) { 'suppressed' }) |"
     }
     if ($rows.Count -gt 100) { $lines += @('', "... and $($rows.Count - 100) more in the SARIF log.") }
     Summary ($lines -join "`n")
@@ -414,19 +447,21 @@ function Write-FindingsTable($Log) {
 # The results raeva's --fail-on counted, for the summary and the gate: not
 # suppressed, not in the baseline, and at the threshold or above, where an
 # unknown severity meets every threshold. Returns, for example, "2 new
-# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories.
+# findings at or above 'high' (GHSA-x, CVE-y)", with at most five advisories,
+# and no parentheses when no result has a usable advisory id. Ids that differ
+# only in case are two advisories, as in check.sh.
 function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote) {
     $max = switch -CaseSensitive ($FailOn) { 'any' { 4 } 'low' { 3 } 'medium' { 2 } 'high' { 1 } 'critical' { 0 } }
     $count = 0
-    $best = @{}
+    $best = [Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
     foreach ($run in $Log.runs) {
         if (-not $run.PSObject.Properties['results']) { continue }
         foreach ($result in $run.results) {
             if ($result.PSObject.Properties['suppressions'] -and @($result.suppressions).Count -gt 0) { continue }
-            if ($result.PSObject.Properties['baselineState'] -and "$($result.baselineState)" -ceq 'unchanged') { continue }
+            if ($result.PSObject.Properties['baselineState'] -and [string]::Equals("$($result.baselineState)", 'unchanged')) { continue }
             $severity = if ($result.PSObject.Properties['properties'] -and $result.properties -and
                 $result.properties.PSObject.Properties['severity'] -and $null -ne $result.properties.severity) { "$($result.properties.severity)" } else { 'Unknown' }
-            $rank = switch -CaseSensitive ($severity) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } 'None' { 4 } default { 5 } }
+            $rank = Get-Rank $severity
             if ($rank -ne 5 -and $rank -gt $max) { continue }
             $count++
             $id = if ($result.PSObject.Properties['ruleId'] -and $null -ne $result.ruleId) { "$($result.ruleId)" -creplace '[^A-Za-z0-9._:-]', '' } else { '' }
@@ -438,14 +473,16 @@ function Get-FailingFindings($Log, [string]$FailOn, [string]$New, [string]$Quote
     $keys = [string[]]@($best.Keys | ForEach-Object { "$($best[$_])`t$_" })
     [Array]::Sort($keys, [StringComparer]::Ordinal)
     $ids = @($keys | ForEach-Object { "$Quote$($_.Substring(2))$Quote" })
-    $text = "$count $($New)finding$(if ($count -ne 1) { 's' }) at or above '$FailOn' (" + (($ids | Select-Object -First 5) -join ', ')
+    $text = "$count $($New)finding$(if ($count -ne 1) { 's' }) at or above '$FailOn'"
+    if ($ids.Count -eq 0) { return $text }
+    $text += ' (' + (($ids | Select-Object -First 5) -join ', ')
     if ($ids.Count -gt 5) { $text += ", and $($ids.Count - 5) more" }
     "$text)"
 }
 
 function Invoke-Vuln {
     $failOn = if ($env:INPUT_VULN_FAIL_ON) { $env:INPUT_VULN_FAIL_ON } else { 'high' }
-    if ($failOn -notin @('any', 'low', 'medium', 'high', 'critical', 'never')) {
+    if (-not (Test-OneOf $failOn @('any', 'low', 'medium', 'high', 'critical', 'never'))) {
         Write-Output '::error title=setup-raeva::vuln-fail-on must be any, low, medium, high, critical, or never'
         exit 2
     }
@@ -506,14 +543,14 @@ function Invoke-Vuln {
     Out 'sarif-category' (Get-SarifCategory)
     Out 'vuln-findings' $count
     $note = if ($suppressed -gt 0) { ", and $suppressed suppressed by VEX" } else { '' }
-    $gating = if ($failOn -eq 'never') { 'findings do not fail the job (vuln-fail-on: never)' } else { "findings at $failOn or above fail the job" }
-    if ($baseLock -and $failOn -ne 'never') { $gating = "new findings at $failOn or above fail the job" }
+    $gating = if ([string]::Equals($failOn, 'never')) { 'findings do not fail the job (vuln-fail-on: never)' } else { "findings at $failOn or above fail the job" }
+    if ($baseLock -and -not [string]::Equals($failOn, 'never')) { $gating = "new findings at $failOn or above fail the job" }
     if ($code -notin 0, 1) {
         Summary "`n``raeva vuln`` did not complete (exit $code): $count finding(s)$note in the partial SARIF log."
     } else {
         Summary "`n``raeva vuln``: $count finding(s)$note; $gating."
     }
-    if ($code -eq 1 -and $failOn -ne 'never') {
+    if ($code -eq 1 -and -not [string]::Equals($failOn, 'never')) {
         $new = if ($baseLock) { 'new ' } else { '' }
         $failing = Get-FailingFindings $log $failOn $new ''
         if ($failing) {
@@ -594,7 +631,7 @@ function Read-PrBaseline {
 function Invoke-Gate {
     $code = if ($env:VULN_EXIT_CODE) { [int]$env:VULN_EXIT_CODE } else { 0 }
     $failOn = if ($env:INPUT_VULN_FAIL_ON) { $env:INPUT_VULN_FAIL_ON } else { 'high' }
-    if ($code -eq 1 -and $failOn -ne 'never') {
+    if ($code -eq 1 -and -not [string]::Equals($failOn, 'never')) {
         if ($env:VULN_FAILING) {
             Write-Output "::error title=raeva vuln::$(EscMsg "The job fails on $env:VULN_FAILING"); see the job summary and the scan output"
         } else {
@@ -613,7 +650,7 @@ function Invoke-Gate {
 try {
     switch ($Mode) {
         'scan' {
-            if ($checkMode -notin @('blocking', 'report-only')) {
+            if (-not (Test-OneOf $checkMode @('blocking', 'report-only'))) {
                 Write-Output '::error title=setup-raeva::check-mode must be blocking or report-only'
                 exit 2
             }

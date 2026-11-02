@@ -111,7 +111,7 @@ elif '/contents/' in url:
     body = 'display diff response, never a vulnerability baseline\n'
 elif '/code-scanning/alerts' in url:
     status = int(os.getenv('CS_STATUS', '200'))
-    body = {'message': os.getenv('CS_MESSAGE', '')} if status != 200 else []
+    body = json.loads(os.getenv('CS_BODY') or json.dumps({'message': os.getenv('CS_MESSAGE', '')})) if status != 200 else []
 else:
     sys.exit('unexpected request')
 Path(os.environ['TEST_DIR'], 'requests').open('a').write(url + '\n')
@@ -249,7 +249,7 @@ for f in files:
         elif not re.fullmatch(r'[0-9a-f]{40} # v\d+(\.\d+)*', ref):
             errors.append(f'{f.name}: {name}@{ref} is not pinned by SHA')
     found = [m['currentValue'] for m in version.finditer(text)]
-    if found != ['0.5.0'] * steps:
+    if found != ['0.5.1'] * steps:
         errors.append(f'{f.name}: the Renovate manager finds {found} in {steps} steps')
 if len(own) != 1 or not re.fullmatch(r'v\d+\.\d+\.\d+|(?!0{40})[0-9a-f]{40} # v\d+\.\d+\.\d+', next(iter(own))):
     errors.append(f'setup-raeva refs: {sorted(own)}')
@@ -284,6 +284,19 @@ for tag in "${variants[@]}"; do
     && ok "$tag: proposed diff output" || bad "$tag: proposed diff output"
   has "$t/summary" 'gson 2.13.2 -> 2.13.1' && has "$t/summary" "$(output fix-command)" \
     && ok "$tag: summary has diff and fix command" || bad "$tag: summary has diff and fix command"
+  # A blocking check on a person's pull request writes no proposed lock, and
+  # still names the command with this job's options.
+  run env INPUT_CHECK=true INPUT_PROFILES=ci INPUT_PROPERTIES=token=private-test-value \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" "${check[@]}" scan
+  expect "$tag: a stale lock fails a person's pull request" 7 $?
+  fix=$(output fix-command)
+  [[ "$fix" == *' sync --activate-profiles=ci '*token=* && "$fix" != *private-test-value* ]] \
+    && ok "$tag: a blocking stale lock sets fix-command" || bad "$tag: blocking fix-command is '$fix'"
+  grep '^::error file=' "$t/log" | grep -qF "%0AWith this job's options: $fix" \
+    && ok "$tag: the annotation names the fix command" || bad "$tag: the annotation names the fix command"
+  has "$t/summary" "$fix" && has "$t/summary" 'Replace each `<value>`' && ! has "$t/summary" 'Proposed raeva.lock' \
+    && ! has "$t/summary" private-test-value && ok "$tag: the summary names the fix command without a proposed lock" \
+    || bad "$tag: blocking summary fix command"
   cmp -s "$t/project/raeva.lock" "$t/original.lock" && ok "$tag: committed lock stays unchanged" || bad "$tag: committed lock changed"
   [[ -z "$(find "$t/temp" -name committed.lock -print)" ]] && ok "$tag: puts the committed lock back" || bad "$tag: committed lock copy remains"
   for code in 3 4; do
@@ -375,12 +388,18 @@ for tag in "${variants[@]}"; do
     && has "$t/summary" 'a missing lock does not fail this job' && ok "$tag: report-only warns on a missing lock" || bad "$tag: report-only missing lock"
   run env INPUT_CHECK=true INPUT_CHECK_MODE=report-only INPUT_VULN=true SCAN_CODE=3 FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
   expect "$tag: report-only without a lock still scans" 0 $?
-  [[ "$(output vuln-exit-code)" == 3 ]] && ok "$tag: a scan without a lock still fails at the gate" || bad "$tag: vuln without a lock"
+  code=$(output vuln-exit-code)
+  run env VULN_EXIT_CODE="$code" INPUT_VULN_FAIL_ON=high "${check[@]}" gate
+  expect "$tag: a scan without a lock still fails at the gate" 3 $?
   run env INPUT_CHECK=true FROZEN_CODE=3 FROZEN_JSON="$missing" "${check[@]}" scan
   expect "$tag: blocking fails without a lock" 3 $?
+  [[ -z "$(output fix-command)" ]] && ! has "$t/log" "this job's options" \
+    && ok "$tag: only a stale lock gets the fix command" || bad "$tag: fix command for a missing lock"
 
   # A crash, a kill, or a binary that cannot load writes no JSON envelope.
-  crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom\n\n')
+  # $(...) drops trailing newlines, so the blank lines that end the output
+  # are added after it.
+  crash=$(for i in $(seq 1 23); do echo "line $i"; done; printf '::error::not a command\r\nthread main panicked: boom')$'\n\n\n'
   run env INPUT_CHECK=true FROZEN_CODE=101 FROZEN_JSON='' FROZEN_STDERR="$crash" "${check[@]}" scan
   expect "$tag: a crash keeps its exit code" 101 $?
   annotation=$(grep '^::error file=' "$t/log")
@@ -438,6 +457,46 @@ for tag in "${variants[@]}"; do
     && ok "$tag: the gate keeps its message without a list" || bad "$tag: gate without a list"
   run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=0 "${check[@]}" scan
   [[ -z "$(output vuln-failing)" ]] && ok "$tag: a passing scan lists no failing findings" || bad "$tag: failing list after exit 0"
+  # Ids and severities that differ only in case stay apart and sort by code
+  # point, as jq sorts them; a lowercase severity is unknown.
+  sarif="{\"runs\":[{\"results\":[$(r GHSA-abcd-efgh-ijkl High),$(r ghsa-abcd-efgh-ijkl Critical),$(r CVE-x high),$(r b-id Medium),$(r B-id Medium),$(r a-id Medium)]}]}"
+  run env INPUT_VULN=true INPUT_VULN_FAIL_ON=medium SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  [[ "$(output vuln-failing)" == "6 findings at or above 'medium' (ghsa-abcd-efgh-ijkl, GHSA-abcd-efgh-ijkl, B-id, a-id, b-id, and 1 more)" ]] \
+    && ok "$tag: ids that differ in case are two advisories" || bad "$tag: ids that differ in case ($(output vuln-failing))"
+  [[ "$(sed -n 's/^| [^|]* | \([^|]*\) |.*/\1/p' "$t/summary" | tr '\n' ' ')" == 'Advisory --- ghsa-abcd-efgh-ijkl GHSA-abcd-efgh-ijkl B-id a-id b-id CVE-x ' ]] \
+    && ok "$tag: the table orders ids and severities by code point" || bad "$tag: table order"
+  # The same for characters that culture comparison ignores or orders by
+  # UTF-16 code unit: a soft hyphen, NUL, U+E000 and U+10000. An id sorts
+  # before the ids it begins, and equal ids keep their order, here at row 3
+  # and row 10.
+  p() { printf '{"ruleId":"%s","properties":{"severity":"High","dependencyPurl":"%s"}}' "$1" "$2"; }
+  sarif="{\"runs\":[{\"results\":[$(p '\ud800\udc00' p5),$(p '\ue000' p4),$(p 'a\u0000' p3),$(p a p1),$(r CVE-soft 'Hi\u00adgh'),$(r CVE-u Critical ',"baselineState":"UNCHANGED"'),$(p z q),$(p z q),$(p z q),$(p z q),$(p a p2)]}]}"
+  run env INPUT_VULN=true INPUT_VULN_FAIL_ON=critical SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  [[ "$(output vuln-failing)" == "2 findings at or above 'critical' (CVE-u, CVE-soft)" ]] \
+    && ok "$tag: severities and baseline states compare by code point" || bad "$tag: ordinal severity ($(output vuln-failing))"
+  [[ "$(sed -n 's/^| [^|]* | [^|]* | \([^|]*\) |.*/\1/p' "$t/summary" | tr '\n' ' ')" == 'Dependency ---  p1 p2 p3 q q q q p4 p5  ' ]] \
+    && has "$t/summary" '| CVE-u |  |  | not compared |  |' && ok "$tag: the table sorts ids by code point, stably" || bad "$tag: code point order"
+  # A baseline state with a soft hyphen is not "unchanged", and an empty
+  # severity shows as written.
+  sarif="{\"runs\":[{\"results\":[$(r CVE-sh Critical ',"baselineState":"unch\u00adanged"'),$(r CVE-empty '')]}]}"
+  run env INPUT_VULN=true INPUT_VULN_FAIL_ON=critical SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  [[ "$(output vuln-failing)" == *"(CVE-sh"* ]] && has "$t/summary" '|  | CVE-empty |' \
+    && ok "$tag: a soft hyphen keeps a baseline state apart, an empty severity stays empty" || bad "$tag: soft hyphen state or empty severity ($(output vuln-failing))"
+  run env VULN_EXIT_CODE=1 INPUT_VULN_FAIL_ON=NEVER "${check[@]}" gate
+  expect "$tag: the gate compares never exactly" 1 $?
+  for input in INPUT_VULN_FAIL_ON=High INPUT_CHECK_MODE=Blocking; do
+    run env INPUT_VULN=true "$input" "${check[@]}" scan
+    expect "$tag: $input is refused" 2 $?
+  done
+  # Without a usable advisory id the line names none, and has no "()".
+  sarif="{\"runs\":[{\"results\":[$(r '!!' High),{\"properties\":{\"severity\":\"Critical\"}}]}]}"
+  run env INPUT_VULN=true SARIF_TEXT="$sarif" SCAN_CODE=1 "${check[@]}" scan
+  failing=$(output vuln-failing)
+  [[ "$failing" == "2 findings at or above 'high'" ]] && has "$t/summary" "The job fails on 2 findings at or above 'high'." \
+    && ok "$tag: findings without ids are counted without parentheses" || bad "$tag: findings without ids ($failing)"
+  run env VULN_EXIT_CODE=1 VULN_FAILING="$failing" "${check[@]}" gate
+  has "$t/log" "::error title=raeva vuln::The job fails on 2 findings at or above 'high'; see the job summary and the scan output" \
+    && ok "$tag: the gate names findings without ids" || bad "$tag: gate without ids"
 
   # The upload is skipped only when code scanning refuses the job token
   # outside a pull_request run, which may upload with a read-only token.
@@ -451,6 +510,23 @@ for tag in "${variants[@]}"; do
         && ok "$tag: a token without code scanning access skips the upload" || bad "$tag: token without access"
     else
       [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: a 403 ($message, $event) leaves the upload to try" || bad "$tag: 403 ($message, $event)"
+    fi
+  done
+  # The whole message decides; the notice quotes its first 200 code points
+  # without trailing newlines. A message that is not a string says nothing.
+  zeros=$(printf '%0199d' 0)
+  for case in "${zeros}ééé must be enabled|${zeros}é" "${zeros}😀😀 must be enabled|${zeros}😀" \
+    $'Advanced Security must be enabled\n\n|Advanced Security must be enabled' '|'; do
+    IFS='|' read -r message quoted <<< "${case//$'\n'/$'\r'}"
+    body=""
+    [[ -n "$message" ]] || body='{"message":["not enabled"]}'
+    run env INPUT_VULN=true INPUT_SARIF_UPLOAD=true GITHUB_REPOSITORY=o/r GITHUB_EVENT_NAME=push INPUT_WORKING_DIRECTORY=. CS_STATUS=403 \
+      CS_MESSAGE="${message//$'\r'/$'\n'}" CS_BODY="$body" "${check[@]}" scan
+    if [[ -n "$message" ]]; then
+      [[ -z "$(output sarif-upload)" ]] && has "$t/log" "code scanning answered HTTP 403 ($quoted). A private repository needs GitHub Code Security." \
+        && ok "$tag: a 403 message is read whole and quoted in part (${quoted: -20})" || bad "$tag: 403 message (${quoted: -20})"
+    else
+      [[ "$(output sarif-upload)" == true ]] && ! has "$t/log" '::notice' && ok "$tag: a 403 message that is not a string leaves the upload to try" || bad "$tag: 403 message that is not a string"
     fi
   done
 
@@ -502,12 +578,24 @@ LOCK
     expect "$tag: lock diff and baseline with base $case" 0 $?
     ! has "$t/requests" /contents/ && ok "$tag: lock diff reuses the baseline read ($case)" || bad "$tag: lock diff read the base lock again ($case)"
   done
-  [[ "$tag" != bash ]] || has "$t/summary" 'This pull request adds' && ok "$tag: lock diff of a base without a lock" || bad "$tag: lock diff of a base without a lock"
+  if [[ "$tag" == bash ]]; then
+    has "$t/summary" 'This pull request adds' && ok "$tag: lock diff of a base without a lock" || bad "$tag: lock diff of a base without a lock"
+  fi
+  # The pull request changes the lock, so the diff runs. The fake raeva
+  # fails a --baseline file other than the base commit's lock.
+  printf '# changed\n' >> "$t/project/raeva.lock"
   run env -C "$t/project" INPUT_CHECK=true FROZEN_CODE=0 INPUT_LOCK_DIFF=true INPUT_VULN=true \
     INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 \
     GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$t/event.json" GITHUB_REPOSITORY=o/r "${check[@]}" scan
-  [[ "$(output vuln-exit-code)" == 0 ]] && ok "$tag: scan uses validated baseline" || bad "$tag: baseline scan"
-  [[ "$tag" != bash ]] || has "$t/summary" '### raeva.lock' && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
+  baseline=$(sed -n '/^--baseline$/{n;p;q;}' "$t/args")
+  [[ "$(output vuln-exit-code)" == 0 && -n "$baseline" ]] && cmp -s "$baseline" "$t/original.lock" \
+    && ok "$tag: scan uses validated baseline" || bad "$tag: baseline scan"
+  if [[ "$tag" == bash ]]; then
+    tr '\n' ' ' < "$t/args" | grep -qF -- " lock diff $baseline raeva.lock " && ! has "$t/requests" /contents/ \
+      && has "$t/summary" '### raeva.lock changes against the base branch' && has "$t/summary" 'gson 2.13.2 -> 2.13.1' \
+      && ok "$tag: lock diff against the baseline" || bad "$tag: lock diff against the baseline"
+  fi
+  cp "$t/original.lock" "$t/project/raeva.lock"
   has "$t/summary" 'Baseline |' && has "$t/summary" 'new |' && has "$t/summary" 'existing |' \
     && has "$t/summary" 'existing | suppressed |' && ok "$tag: summary marks new, existing, and suppressed results" || bad "$tag: baseline summary labels"
   run env -C "$t/project" INPUT_VULN=true INPUT_WORKING_DIRECTORY=. BASELINE_MARKS=1 SCAN_CODE=1 \

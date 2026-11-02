@@ -8,7 +8,7 @@ branding:
 inputs:
   version:
     description: >-
-      The raeva version to install, such as 0.5.0. Use an exact version so a
+      The raeva version to install, such as 0.5.1. Use an exact version so a
       CLI upgrade is a reviewed change; 'latest' resolves the newest release
       at run time.
     required: true
@@ -50,7 +50,8 @@ inputs:
     description: >-
       Platforms for the frozen check and relock, comma separated
       (linux-x86_64,macos-aarch64). Empty means every platform the lock
-      records.
+      records, and the frozen check then also needs the runner's platform in
+      the lock.
     default: ""
   settings:
     description: >-

@@ -8,23 +8,39 @@ vulnerabilities.
 
 ## Quick start
 
-First write the lock on your machine, tell git how to merge it, and commit
+First write the lock on your machine, mark it as generated, and commit
 both files:
 
 ```sh
 raeva sync
-printf 'raeva.lock -merge linguist-generated=true\n' >> .gitattributes
+printf 'raeva.lock linguist-generated=true\n' >> .gitattributes
 git add raeva.lock .gitattributes
 git commit -m "Add raeva.lock"
 ```
 
-With `-merge`, git keeps your side of a conflicted `raeva.lock` without
-conflict markers and still reports the conflict: fix the POMs, run
-`raeva sync`, and `git add raeva.lock`. `linguist-generated` folds the lock
-in pull request diffs; the job summary has the readable diff.
+`linguist-generated` folds the lock in pull request diffs; the job summary
+has the readable diff. Git merges `raeva.lock` with its default driver:
+edits to different modules usually merge cleanly, and the check reads the
+merged lock. When the lock conflicts, run `raeva sync` on the merged POMs
+and `git add raeva.lock`. If your `.gitattributes` has the
+`raeva.lock -merge` line that setup-raeva 1.0.0 suggested, remove it.
+
+`raeva sync` locks the platform it runs on, and the check needs the
+runner's platform in the lock: a lock written only on a Mac fails a Linux
+job with exit 3 (`PLATFORM_MISSING`), in report-only mode too. When developers write the lock on a
+Mac and CI runs Linux, lock both once:
+
+```sh
+raeva sync --platforms linux-x86_64,macos-aarch64
+```
+
+Later syncs keep the platforms the lock records.
 
 Then keep your Maven build as it is and add a workflow that checks the lock
-(`examples/ci.yml` has both jobs):
+(`examples/ci.yml` has both jobs). If the build reads a private Maven
+repository, start from `examples/private.yml` instead: it gives raeva the
+credentials and sets `cache: false`, since the cache holds the private jars
+and pull requests from forks restore it.
 
 ```yaml
 name: raeva
@@ -52,7 +68,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@f944e5a93055fee7320fbbb9026b1e4fe7ee4df7 # v1.0.0
         with:
-          version: 0.5.0
+          version: 0.5.1
           check: true
           check-mode: report-only
 ```
@@ -69,8 +85,7 @@ the job.
 
 Report-only does not fail on the lock, so it does not stop a stale lock from
 merging. Use it while you adopt raeva, then remove `check-mode` so that lock
-changes and a missing lock fail the job. Its default is `blocking`. The check covers every platform the lock records, whatever the
-runner's OS, so one Linux job checks a lock written on a Mac. On a pull
+changes and a missing lock fail the job. Its default is `blocking`. On a pull
 request, the job summary lists what the pull request changes in the lock.
 The `merge_group` trigger lets the check run in a merge queue. Add bot lock
 commits before you make a blocking check required (see "Bot pull
@@ -106,9 +121,13 @@ set, the active profiles, or the `-D` and `-P` options. The error annotation
 lists the changes and raeva's hint. A POM edit that resolves to the same lock
 passes, and so does a version bump of the reactor's own modules, such as a
 `mvn versions:set` or release commit, when nothing else changes. A broken or
-conflicted lock fails with exit 3 (`LOCKFILE_INVALID`), and a platform the
-`platforms` input names but the lock lacks fails with exit 3
-(`PLATFORM_MISSING`).
+conflicted lock fails with exit 3 (`LOCKFILE_INVALID`). With the
+`platforms` input empty, the check covers every platform the lock records
+and fails with exit 3 (`PLATFORM_MISSING`) when the runner's platform is not
+among them. With the input set, the platforms it names replace the
+runner's: the lock must record each of them (exit 3 otherwise), and a POM
+change that alters another recorded platform still fails with exit 7.
+Report-only fails on the exit 3 errors too.
 
 raeva evaluates POM profiles with the runner's JDK. When a profile activates
 by JDK version and CI builds on several JDKs, list them in `raeva.toml` and
@@ -201,9 +220,10 @@ input. Renovate updates `version` with a regex manager in `renovate.json`:
 }
 ```
 
-Every Maven update rewrites `raeva.lock`, so once one Dependabot pull
-request merges, the others conflict in the lock. Group the Maven updates in
-`.github/dependabot.yml`, so that one pull request per run carries them:
+A Maven update rewrites part of `raeva.lock`, so once one Dependabot pull
+request merges, another that changed nearby lines of the lock conflicts.
+Group the Maven updates in `.github/dependabot.yml`, so that one pull
+request per run carries them:
 
 ```yaml
 version: 2
@@ -312,7 +332,7 @@ archive, check it against a SHA-256 pinned in the file, and run
 the release's `sha256.sum`:
 
 ```sh
-curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.0/sha256.sum \
+curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.1/sha256.sum \
   | grep raeva-x86_64-unknown-linux-gnu.tar.gz
 ```
 
@@ -345,10 +365,12 @@ installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
    annotation on `raeva.lock` with the error code, the changes, and raeva's
    hints. raeva's warnings become one annotation per warning code, except
    `HTTP_REPO_BLOCKED`, `TRANSITIVE_REPO_DROPPED`, and `WEAK_HASH_FALLBACK`,
-   which only the job summary lists. With `check-mode: report-only`, a stale
+   which only the job summary lists. A stale lock's annotation and summary
+   also give the fix command with this job's options, and the `fix-command`
+   output holds it. With `check-mode: report-only`, a stale
    or missing lock warns instead; other errors still fail. With report-only,
-   and on a bot's pull request, the summary shows the proposed lock diff and
-   a fix command, and the full diff goes to an artifact,
+   and on a bot's pull request, the summary shows the proposed lock diff,
+   and the full diff goes to an artifact,
    `raeva-lock-proposed-` followed by the working directory and a hash.
 7. With `lock-diff: true`, the default, on a pull request: compares the base
    commit's `raeva.lock` with this one, writes `raeva lock diff` to the job
@@ -379,7 +401,7 @@ shell installer skips the check when `sha256sum` is missing.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | required | An exact version such as `0.5.0`, or `latest`. |
+| `version` | required | An exact version such as `0.5.1`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
 | `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |

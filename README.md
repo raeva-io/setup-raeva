@@ -124,9 +124,10 @@ passes, and so does a version bump of the reactor's own modules, such as a
 conflicted lock fails with exit 3 (`LOCKFILE_INVALID`). With the
 `platforms` input empty, the check covers every platform the lock records
 and fails with exit 3 (`PLATFORM_MISSING`) when the runner's platform is not
-among them. With the input set, it covers only the platforms the input
-names and fails with exit 3 when the lock lacks one. Report-only fails on
-these errors too.
+among them. With the input set, the platforms it names replace the
+runner's: the lock must record each of them (exit 3 otherwise), and a POM
+change that alters another recorded platform still fails with exit 7.
+Report-only fails on the exit 3 errors too.
 
 raeva evaluates POM profiles with the runner's JDK. When a profile activates
 by JDK version and CI builds on several JDKs, list them in `raeva.toml` and

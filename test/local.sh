@@ -393,8 +393,11 @@ for i in "${!install_variants[@]}"; do
   log="$scratch/run-$tag-stub-frozen/log"
   has "$log" "Run raeva sync --platforms linux-x86_64 and commit raeva.lock" && ok "$tag: annotation keeps the CLI hint" || bad "$tag: annotation keeps the CLI hint"
   has "$log" "See the error codes" && bad "$tag: no generic hint when the CLI gave one" || ok "$tag: no generic hint when the CLI gave one"
-  has "$log" "^::warning title=raeva AUTH_FALLBACK::central refused, mirror served (url=https://mirror.example/); and 1 more" && ok "$tag: one warning annotation per code" || bad "$tag: one warning annotation per code"
-  [[ $(grep -c "^::warning title=raeva AUTH_FALLBACK" "$log") -eq 1 ]] && ok "$tag: no repeated warning annotation" || bad "$tag: no repeated warning annotation"
+  # Each fallback pair is its own annotation, as raeva prints them.
+  has "$log" "^::warning title=raeva AUTH_FALLBACK::central refused, mirror served (url=https://mirror.example/)$" \
+    && has "$log" "^::warning title=raeva AUTH_FALLBACK::second$" \
+    && ok "$tag: one warning annotation per fallback pair" || bad "$tag: one warning annotation per fallback pair"
+  [[ $(grep -c "^::warning title=raeva AUTH_FALLBACK" "$log") -eq 2 ]] && ok "$tag: no repeated warning annotation" || bad "$tag: no repeated warning annotation"
   has "$scratch/run-$tag-stub-frozen/summary" "gson  2.13.2 -> 2.13.1" && ok "$tag: summary lists the change" || bad "$tag: summary lists the change"
   has "$log" "^::warning title=raeva HTTP_REPO_BLOCKED" && bad "$tag: no HTTP_REPO_BLOCKED annotation" || ok "$tag: no HTTP_REPO_BLOCKED annotation"
   has "$scratch/run-$tag-stub-frozen/summary" "HTTP_REPO_BLOCKED http repository in a POM" && ok "$tag: HTTP_REPO_BLOCKED stays in the summary" || bad "$tag: HTTP_REPO_BLOCKED stays in the summary"

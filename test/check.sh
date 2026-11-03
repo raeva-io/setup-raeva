@@ -249,7 +249,7 @@ for f in files:
         elif not re.fullmatch(r'[0-9a-f]{40} # v\d+(\.\d+)*', ref):
             errors.append(f'{f.name}: {name}@{ref} is not pinned by SHA')
     found = [m['currentValue'] for m in version.finditer(text)]
-    if found != ['0.5.1'] * steps:
+    if found != ['0.5.2'] * steps:
         errors.append(f'{f.name}: the Renovate manager finds {found} in {steps} steps')
 if len(own) != 1 or not re.fullmatch(r'v\d+\.\d+\.\d+|(?!0{40})[0-9a-f]{40} # v\d+\.\d+\.\d+', next(iter(own))):
     errors.append(f'setup-raeva refs: {sorted(own)}')
@@ -396,6 +396,44 @@ for tag in "${variants[@]}"; do
   [[ -z "$(output fix-command)" ]] && ! has "$t/log" "this job's options" \
     && ok "$tag: only a stale lock gets the fix command" || bad "$tag: fix command for a missing lock"
 
+  # Pin refusals need investigation before a lock is written again.
+  pin_note="raeva.lock pins other bytes than a repository served. Find out why before relocking; raeva's hint says how."
+  for refused in \
+    '{"code":"CHECKSUM_MISMATCH","error":"downloaded bytes do not match their checksums in raeva.lock","hints":["Check the repository.","Ask why the bytes changed. Then run raeva sync --update."]}' \
+    '{"code":"LOCKFILE_MISMATCH","error":"fetched bytes do not match their checksums in raeva.lock"}' \
+    '{"code":"LOCKFILE_MISMATCH","error":"locked bytes differ","hints":["Check the repository.","Ask why the bytes changed. Then run raeva sync --update."]}'; do
+    for check_mode in blocking report-only; do
+      want=7
+      [[ "$check_mode" != report-only ]] || want=0
+      run env INPUT_CHECK=true INPUT_CHECK_MODE="$check_mode" FROZEN_JSON="$refused" "${check[@]}" scan
+      expect "$tag: a pin refusal keeps $check_mode behavior" "$want" $?
+      ! has "$t/output" 'fix-command=' && ! has "$t/summary" 'To fix it' \
+        && ! has "$t/summary" 'Proposed raeva.lock' \
+        && ! has "$t/log" "With this job's options:" && has "$t/summary" "$pin_note" \
+        && ok "$tag: a pin refusal gives no plain sync fix" || bad "$tag: pin refusal fix"
+      if [[ "$refused" == *hints* ]]; then
+        has "$t/summary" 'Check the repository.' && has "$t/summary" 'Then run raeva sync --update.' \
+          && has "$t/log" 'Check the repository.%0AAsk why the bytes changed. Then run raeva sync --update.' \
+          && ok "$tag: a pin refusal keeps every hint" || bad "$tag: pin refusal hints"
+      else
+        ! has "$t/summary" "Run 'raeva sync'" && ! has "$t/log" "Run 'raeva sync'" \
+          && ok "$tag: a pin refusal without hints gets no plain sync advice" || bad "$tag: pin refusal fallback hint"
+      fi
+    done
+  done
+  for stale in \
+    '{"code":"LOCKFILE_MISMATCH","error":"stale lock","hints":["Run raeva sync."]}' \
+    '{"code":"LOCKFILE_MISMATCH","error":"unpinned row","hints":["Run raeva sync --update to resolve again."]}' \
+    '{"code":"PLATFORM_MISSING","error":"platform missing","hints":["Run raeva sync --update."]}'; do
+    run env INPUT_CHECK=true FROZEN_JSON="$stale" "${check[@]}" scan
+    expect "$tag: other exit-7 errors still fail" 7 $?
+    [[ -n "$(output fix-command)" ]] && has "$t/summary" 'To fix it' && ! has "$t/summary" "$pin_note" \
+      && ok "$tag: other exit-7 errors keep the sync fix" || bad "$tag: other exit-7 fix"
+  done
+  run env INPUT_CHECK=true FROZEN_CODE=4 FROZEN_JSON="$refused" "${check[@]}" scan
+  expect "$tag: pin advice applies only to exit 7" 4 $?
+  ! has "$t/summary" "$pin_note" && ok "$tag: other exits keep their advice" || bad "$tag: pin advice on another exit"
+
   # A crash, a kill, or a binary that cannot load writes no JSON envelope.
   # $(...) drops trailing newlines, so the blank lines that end the output
   # are added after it.
@@ -439,6 +477,38 @@ for tag in "${variants[@]}"; do
   run env INPUT_CHECK=true FROZEN_CODE=0 FROZEN_JSON='{"data":{"warnings":[{"code":"HTTP_REPO_BLOCKED","message":"x\nJAVA_VERSION_DEFAULTED\tforged","context":{"url":"a\tb\nc"}}]}}' "${check[@]}" scan
   ! grep -q '^::warning' "$t/log" && has "$t/summary" 'HTTP_REPO_BLOCKED x JAVA_VERSION_DEFAULTED forged (url=a b c)' \
     && ok "$tag: a warning stays one line" || bad "$tag: a multi-line warning"
+
+  # Each fallback warning stands for one skipped and serving pair, which its
+  # context names even where the messages read the same.
+  for wcode in REPOSITORY_FALLBACK AUTH_FALLBACK; do
+    warned=$(jq -n --arg code "$wcode" '{code:"LOCKFILE_MISMATCH",error:"stale lock",data:{warnings:[
+      {code:$code,message:"Skipped a; serving from b",context:{artifact:"one"}},
+      {code:$code,message:"Skipped a; serving from c",context:null},
+      {code:$code,message:"Skipped a; serving from b",context:{artifact:"two"}},
+      {code:$code,message:"skipped a; serving from b",context:null},
+      {code:$code,message:"Skipped a; serving from b\u00ad",context:null},
+      {code:"JAVA_VERSION_DEFAULTED",message:"java 17",context:{module:"one"}},
+      {code:"JAVA_VERSION_DEFAULTED",message:"java 21",context:null}
+    ]}}')
+    for code in 0 7; do
+      run env INPUT_CHECK=true FROZEN_CODE="$code" FROZEN_JSON="$warned" "${check[@]}" scan
+      expect "$tag: fallback warnings keep exit $code" "$code" $?
+      [[ $(grep -c "^::warning title=raeva $wcode::" "$t/log") == 5 \
+        && $(grep -c "^$wcode " "$t/summary") == 5 ]] \
+        && ok "$tag: $wcode keeps five distinct pairs" || bad "$tag: $wcode distinct pairs"
+      for message in 'Skipped a; serving from b (artifact=one)' 'Skipped a; serving from b (artifact=two)' \
+        'Skipped a; serving from c' \
+        'skipped a; serving from b' $'Skipped a; serving from b\u00ad'; do
+        [[ $(grep -cFx "::warning title=raeva $wcode::$message" "$t/log") == 1 \
+          && $(grep -cFx "$wcode $message" "$t/summary") == 1 ]] \
+          && ok "$tag: $wcode lists $message once" || bad "$tag: $wcode message $message"
+      done
+      grouped='java 17 (module=one); and 1 more (raeva --json sync --frozen lists them)'
+      has "$t/log" "::warning title=raeva JAVA_VERSION_DEFAULTED::$grouped" \
+        && has "$t/summary" "JAVA_VERSION_DEFAULTED $grouped" \
+        && ! has "$t/summary" 'java 21' && ok "$tag: other warning codes stay grouped" || bad "$tag: warning code grouping"
+    done
+  done
 
   # The gate names the findings that fail the job, as the summary counts them.
   r() { printf '{"ruleId":"%s","properties":{"severity":"%s"}%s}' "$1" "$2" "${3:-}"; }

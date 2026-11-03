@@ -32,6 +32,7 @@ on:
     paths:
       - "**/pom.xml"
       - "**/.mvn/maven.config"
+      - "**/.mvn/jvm.config"
       - "**/raeva.toml"
 
 permissions: {}
@@ -78,7 +79,7 @@ jobs:
       # Dependabot secrets, as in private.yml (README, "Bot pull requests").
       - uses: raeva-io/setup-raeva@531ed34d5b24d6a07f3ed9b904fc5d69dba80d12 # v1.0.1
         with:
-          version: 0.5.1
+          version: 0.5.2
           relock: true
           working-directory: ${{ matrix.root }}
       - id: diff

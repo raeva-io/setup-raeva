@@ -4,7 +4,7 @@
 # (see "Other CI systems" in the setup-raeva README). Pinning it here means
 # a replaced release asset fails the job. Add .raeva/ to .gitignore.
 variables:
-  RAEVA_VERSION: "0.5.1"
+  RAEVA_VERSION: "0.5.2"
   RAEVA_ARCHIVE: "raeva-x86_64-unknown-linux-gnu.tar.gz"
   RAEVA_SHA256: "<sha256 from sha256.sum>"
   # GitLab caches only paths inside the project directory.
@@ -15,8 +15,11 @@ variables:
   # A JDK listed in [lock] jdks, or the JDK the lock was written with.
   image: maven:3.9-eclipse-temurin-21
   cache:
+    # An older raeva can refuse a store that a newer one upgraded, so each
+    # version keeps its own cache.
     key:
       files: [raeva.lock]
+      prefix: raeva-$RAEVA_VERSION
     paths: [.raeva/store, .raeva/metadata.db]
     policy: $RAEVA_CACHE_POLICY
   before_script:

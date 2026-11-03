@@ -17,3 +17,10 @@
 0.5.1 raeva-x86_64-pc-windows-msvc.zip 8e5594b9872ba81fb7980361c36015e3697362890d21e61954ec261a84530809
 0.5.1 raeva-x86_64-unknown-linux-gnu.tar.gz 3a9aecc6f0f730e07b4e8eb1d8ec3c73abeb595ae64817dc7316edf02831a4b9
 0.5.1 raeva-x86_64-unknown-linux-musl.tar.gz 04fcd2285549950287c562faae9a60565dc3f14e407af415af02b77bc43716af
+0.5.2 raeva-aarch64-apple-darwin.tar.gz 8eef91f31abb1f1a46628352a08d4b4196ecff073826e3baab7b62c1e48207e4
+0.5.2 raeva-aarch64-unknown-linux-gnu.tar.gz 37b0e8b9a4fcf81645363cddcf5692b8992fe4572d82ae8916d268e9c67dc6fc
+0.5.2 raeva-aarch64-unknown-linux-musl.tar.gz ca702f8f87cc6d876570cbc1a390a0eaf6ffd10760d16c041fc3ca32b86c0df1
+0.5.2 raeva-x86_64-apple-darwin.tar.gz a265829de2bc4280e2dac1fb43c3c60b49a8dd54ce3c347f9b324856536d39b1
+0.5.2 raeva-x86_64-pc-windows-msvc.zip 80d0ae9dc5658bd3e8e957af0912b92776b1c64aeededf8dac5a8b231ed0de49
+0.5.2 raeva-x86_64-unknown-linux-gnu.tar.gz 2fb292902ebb2e62e7bf8d5277a1c64a281fdf55ae7a61b005f89c3ac73613ad
+0.5.2 raeva-x86_64-unknown-linux-musl.tar.gz 7cd511d409d4676165816367074b244272c91ae2837f5bb8be952fd3da344e3b

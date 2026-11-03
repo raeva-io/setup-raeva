@@ -116,7 +116,7 @@ function Fenced([string]$Text) {
     Summary ("`n" + $fence + "text`n" + $Text.Replace($fence, "''''") + "`n" + $fence)
 }
 
-# One annotation per warning code, as raeva's own text summary prints them:
+# Fallback warnings keep each distinct repository pair; other codes keep
 # the first warning with its context, and how many more share the code.
 # Only the job summary lists HTTP_REPO_BLOCKED, for an http: repository that
 # some POM declares, and the two codes raeva's text summary omits too:
@@ -128,19 +128,28 @@ function Write-Warnings($Envelope, [string]$Command) {
     if ($all.Count -eq 0) { return }
     $lines = @()
     foreach ($group in ($all | Group-Object -Property code -CaseSensitive | Sort-Object -Property Name -CaseSensitive)) {
-        $first = $group.Group[0]
-        $text = "$($first.message)"
-        if ($first.context -and $first.context -is [psobject]) {
-            $pairs = @($first.context.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" })
-            if ($pairs.Count -gt 0) { $text += " ($($pairs -join ', '))" }
+        $fallback = $group.Name -cin @('REPOSITORY_FALLBACK', 'AUTH_FALLBACK')
+        $items = @($group.Group[0])
+        if ($fallback) {
+            $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $items = @($group.Group | Where-Object {
+                $seen.Add([string]$_.message + [char]0x1f + ($_.context | ConvertTo-Json -Compress -Depth 5))
+            })
         }
-        # One line each, as a code and its text are one line in the summary.
-        $text = $text -replace '[\r\n\t]+', ' '
-        if ($group.Count -gt 1) { $text += "; and $($group.Count - 1) more (raeva --json $Command lists them)" }
-        if ($group.Name -cnotin @('HTTP_REPO_BLOCKED', 'TRANSITIVE_REPO_DROPPED', 'WEAK_HASH_FALLBACK')) {
-            Write-Output "::warning title=$(EscProp "raeva $($group.Name)")::$(EscMsg $text)"
+        foreach ($first in $items) {
+            $text = "$($first.message)"
+            if ($first.context -and $first.context -is [psobject]) {
+                $pairs = @($first.context.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" })
+                if ($pairs.Count -gt 0) { $text += " ($($pairs -join ', '))" }
+            }
+            # One line each, as a code and its text are one line in the summary.
+            $text = $text -replace '[\r\n\t]+', ' '
+            if (-not $fallback -and $group.Count -gt 1) { $text += "; and $($group.Count - 1) more (raeva --json $Command lists them)" }
+            if ($group.Name -cnotin @('HTTP_REPO_BLOCKED', 'TRANSITIVE_REPO_DROPPED', 'WEAK_HASH_FALLBACK')) {
+                Write-Output "::warning title=$(EscProp "raeva $($group.Name)")::$(EscMsg $text)"
+            }
+            $lines += "$($group.Name) $text"
         }
-        $lines += "$($group.Name) $text"
     }
     Summary "`nWarnings:"
     Fenced ($lines -join "`n")
@@ -300,6 +309,10 @@ function Invoke-Frozen {
     }
     $ecode = if ($envelope -and $envelope.PSObject.Properties['code']) { "$($envelope.code)" } else { '' }
     $message = if ($envelope -and $envelope.PSObject.Properties['error']) { "$($envelope.error)" } else { '' }
+    $hasHints = $envelope -and $envelope.PSObject.Properties['hints'] -and @($envelope.hints).Count -gt 0
+    $hints = if ($hasHints) { @($envelope.hints) -join "`n" } else { '' }
+    $pinRefusal = $code -eq 7 -and ($message.Contains('do not match their checksums in raeva.lock') -or
+        ($ecode -ceq 'LOCKFILE_MISMATCH' -and $hints.Contains('why the bytes changed')))
     if (-not $message) {
         $message = [IO.File]::ReadAllText($err).Replace("`r", '').TrimEnd("`n")
         if (-not $message) { $message = [IO.File]::ReadAllText($json).Replace("`r", '').TrimEnd("`n") }
@@ -307,14 +320,14 @@ function Invoke-Frozen {
             "raeva wrote no JSON error. The last lines it printed:`n" + ((@($message -split "`n") | Select-Object -Last 20) -join "`n")
         } else { 'raeva wrote no JSON error and no output.' }
     }
-    $hints = if ($envelope -and $envelope.PSObject.Properties['hints'] -and @($envelope.hints).Count -gt 0) { @($envelope.hints) -join "`n" } else { Hint $ecode }
+    if (-not $hasHints -and -not $pinRefusal) { $hints = Hint $ecode }
     if ($ecode -ceq 'LOCKFILE_INVALID' -and $message -like '*schema version*') {
         $hints = "If a newer raeva wrote raeva.lock, raise the ``version`` input to that release.`n$hints"
     }
     # raeva's hint names a plain `raeva sync`; this job's options can change
     # the lock it writes.
     $fix = ''
-    if ($code -eq 7) {
+    if ($code -eq 7 -and -not $pinRefusal) {
         $fix = Get-SyncCommand
         Out 'fix-command' $fix
     }
@@ -330,17 +343,23 @@ function Invoke-Frozen {
     Fenced "$message`n`n$hints"
     Write-Warnings $envelope 'sync --frozen'
     if ($fix) { Write-FixSummary }
+    if ($pinRefusal) {
+        Summary "`nraeva.lock pins other bytes than a repository served. Find out why before relocking; raeva's hint says how."
+    }
     if ($soft -and $code -ne 7) {
         Summary "`nReport-only mode: a missing lock does not fail this job."
         return
     }
+    # A sync would refuse the same bytes again, so a pin refusal proposes no lock.
     if ($code -eq 7) {
         if ($checkMode -eq 'report-only') {
             Summary "`nReport-only mode: lock changes do not fail this job."
-            Invoke-Proposed
+            if (-not $pinRefusal) { Invoke-Proposed }
             return
         }
-        try { Invoke-Proposed } catch { Write-Host "No proposed lock: $_" }
+        if (-not $pinRefusal) {
+            try { Invoke-Proposed } catch { Write-Host "No proposed lock: $_" }
+        }
     }
     exit $code
 }

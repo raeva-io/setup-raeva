@@ -130,7 +130,7 @@ fix_summary() {
   fi
 }
 
-# One annotation per warning code, as raeva's own text summary prints them:
+# Fallback warnings keep each distinct repository pair; other codes keep
 # the first warning with its context, and how many more share the code.
 # Only the job summary lists HTTP_REPO_BLOCKED, for an http: repository that
 # some POM declares, and the two codes raeva's text summary omits too:
@@ -139,6 +139,8 @@ warnings() {
   local lines
   lines=$(jq -r --arg cmd "$2" '
     [.data.warnings[]?] | group_by(.code)[]
+    | if .[0].code == "REPOSITORY_FALLBACK" or .[0].code == "AUTH_FALLBACK"
+      then group_by([.message, (.context | tojson)])[] | .[0:1] else . end
     | (.[0].context | if type == "object" and length > 0
         then " (" + ([to_entries[] | "\(.key)=\(.value)"] | join(", ")) + ")" else "" end) as $ctx
     | "\(.[0].code)\t" + ("\(.[0].message)\($ctx)" | gsub("[\r\n\t]+"; " "))
@@ -290,9 +292,14 @@ frozen() {
     warnings "$json" "sync --frozen"
     return 0
   fi
-  local err ecode hints="" fix=""
+  local err ecode hints="" fix="" pin_refusal=false
   ecode=$(json_field code "$json")
   err=$(json_field error "$json")
+  hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
+  if [[ $code -eq 7 ]] && { [[ "$err" == *'do not match their checksums in raeva.lock'* ]] \
+    || [[ "$ecode" == LOCKFILE_MISMATCH && "$hints" == *'why the bytes changed'* ]]; }; then
+    pin_refusal=true
+  fi
   if [[ -z "$err" ]]; then
     err=$(tr -d '\r' < "$run/frozen.err")
     [[ -n "$err" ]] || err=$(tr -d '\r' < "$json")
@@ -302,14 +309,13 @@ frozen() {
       err="raeva wrote no JSON error and no output."
     fi
   fi
-  hints=$(jq -r '.hints[]?' "$json" 2>/dev/null || true)
-  [[ -n "$hints" ]] || hints=$(hint_for "$ecode")
+  [[ -n "$hints" || "$pin_refusal" == true ]] || hints=$(hint_for "$ecode")
   if [[ "$ecode" == LOCKFILE_INVALID ]] && grep -qiF "schema version" <<< "$err"; then
     hints='If a newer raeva wrote raeva.lock, raise the `version` input to that release.'$'\n'"$hints"
   fi
   # raeva's hint names a plain `raeva sync`; this job's options can change
   # the lock it writes.
-  if [[ $code -eq 7 ]]; then
+  if [[ $code -eq 7 && "$pin_refusal" == false ]]; then
     fix=$(sync_command)
     out fix-command "$fix"
   fi
@@ -324,17 +330,22 @@ frozen() {
   fenced "$err"$'\n\n'"$hints"
   warnings "$json" "sync --frozen"
   [[ -z "$fix" ]] || fix_summary
+  if [[ "$pin_refusal" == true ]]; then
+    printf "\nraeva.lock pins other bytes than a repository served. Find out why before relocking; raeva's hint says how.\n" >> "$summary"
+  fi
   if [[ "$soft" == true && $code -ne 7 ]]; then
     printf '\nReport-only mode: a missing lock does not fail this job.\n' >> "$summary"
     return 0
   fi
+  # A sync would refuse the same bytes again, so a pin refusal proposes no lock.
   if [[ $code -eq 7 ]]; then
     if [[ "$check_mode" == report-only ]]; then
       printf '\nReport-only mode: lock changes do not fail this job.\n' >> "$summary"
+      [[ "$pin_refusal" == true ]] && return 0
       proposed
       return
     fi
-    proposed || true
+    [[ "$pin_refusal" == true ]] || proposed || true
   fi
   exit "$code"
 }

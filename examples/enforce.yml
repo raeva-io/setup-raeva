@@ -35,7 +35,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@531ed34d5b24d6a07f3ed9b904fc5d69dba80d12 # v1.0.1
         with:
-          version: 0.5.1
+          version: 0.5.2
           check: true
       - name: Export the locked artifacts and their checksums
         run: |

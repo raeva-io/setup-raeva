@@ -5,11 +5,14 @@
 // a replaced release asset fails the build. The agent needs curl, tar,
 // sha256sum, glibc, and a JDK listed in [lock] jdks, or the JDK the lock was
 // written with, as JAVA_HOME. The store stays in the workspace between
-// builds; add .raeva/ to .gitignore.
+// builds, one per raeva version, since an older raeva can refuse a store
+// that a newer one upgraded; delete the directory of a version no longer
+// used. Add
+// .raeva/ to .gitignore.
 pipeline {
   agent any
   environment {
-    RAEVA_VERSION = '0.5.1'
+    RAEVA_VERSION = '0.5.2'
     RAEVA_ARCHIVE = 'raeva-x86_64-unknown-linux-gnu.tar.gz'
     RAEVA_SHA256 = '<sha256 from sha256.sum>'
   }
@@ -19,7 +22,7 @@ pipeline {
         // Single quotes: the shell, not Groovy, expands the variables.
         sh '''
           set -eu
-          export RAEVA_HOME="$WORKSPACE/.raeva"
+          export RAEVA_HOME="$WORKSPACE/.raeva/home-$RAEVA_VERSION"
           mkdir -p .raeva/bin
           curl --proto '=https' --tlsv1.2 -fsSL -o .raeva/raeva.tar.gz \
             "https://github.com/raeva-io/raeva/releases/download/v${RAEVA_VERSION}/${RAEVA_ARCHIVE}"

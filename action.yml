@@ -8,7 +8,7 @@ branding:
 inputs:
   version:
     description: >-
-      The raeva version to install, such as 0.5.1. Use an exact version so a
+      The raeva version to install, such as 0.5.2. Use an exact version so a
       CLI upgrade is a reviewed change; 'latest' resolves the newest release
       at run time.
     required: true

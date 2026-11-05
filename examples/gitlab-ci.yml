@@ -1,11 +1,11 @@
 # .gitlab-ci.yml: check raeva.lock next to an unchanged Maven build.
 #
-# RAEVA_SHA256 is the line for RAEVA_ARCHIVE in the release's sha256.sum
-# (see "Other CI systems" in the setup-raeva README). Pinning it here means
+# RAEVA_SHA256 is the SHA-256 that the release's sha256.sum gives for
+# RAEVA_ARCHIVE (see "Other CI systems" in the setup-raeva README). Pinning it here means
 # a replaced release asset fails the job. Add .raeva/ to .gitignore.
 variables:
-  RAEVA_VERSION: "0.5.2"
-  RAEVA_ARCHIVE: "raeva-x86_64-unknown-linux-gnu.tar.gz"
+  RAEVA_VERSION: "0.5.3"
+  RAEVA_ARCHIVE: "raeva-x86_64-unknown-linux-musl.tar.gz"
   RAEVA_SHA256: "<sha256 from sha256.sum>"
   # GitLab caches only paths inside the project directory.
   RAEVA_HOME: "$CI_PROJECT_DIR/.raeva"

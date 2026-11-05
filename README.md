@@ -68,7 +68,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@7a17438e777be4f200f22ae3f383d98d107d1081 # v1.0.2
         with:
-          version: 0.5.2
+          version: 0.5.3
           check: true
           check-mode: report-only
 ```
@@ -328,18 +328,18 @@ flags in the Maven step.
 
 `examples/gitlab-ci.yml` and `examples/Jenkinsfile` download the release
 archive, check it against a SHA-256 pinned in the file, and run
-`raeva sync --frozen` before an unchanged Maven build. Take the SHA-256 from
-the release's `sha256.sum`:
+`raeva sync --frozen` before an unchanged Maven build. They take the static
+musl archive, which runs on any Linux; the glibc one needs glibc 2.34 or
+newer. Take the SHA-256 from the release's `sha256.sum`:
 
 ```sh
-curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.2/sha256.sum \
-  | grep raeva-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.3/sha256.sum \
+  | grep raeva-x86_64-unknown-linux-musl.tar.gz
 ```
 
 Check it against the release's build attestation once, where `gh` is
-installed: `gh attestation verify raeva-x86_64-unknown-linux-gnu.tar.gz
---repo raeva-io/raeva`. For Alpine or another musl image, select the
-`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` archive instead.
+installed: `gh attestation verify raeva-x86_64-unknown-linux-musl.tar.gz
+--repo raeva-io/raeva`. On aarch64, select `aarch64-unknown-linux-musl`.
 
 ## What the action does
 
@@ -401,7 +401,7 @@ shell installer skips the check when `sha256sum` is missing.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | required | An exact version such as `0.5.2`, or `latest`. |
+| `version` | required | An exact version such as `0.5.3`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
 | `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |

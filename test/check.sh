@@ -249,7 +249,7 @@ for f in files:
         elif not re.fullmatch(r'[0-9a-f]{40} # v\d+(\.\d+)*', ref):
             errors.append(f'{f.name}: {name}@{ref} is not pinned by SHA')
     found = [m['currentValue'] for m in version.finditer(text)]
-    if found != ['0.5.2'] * steps:
+    if found != ['0.5.3'] * steps:
         errors.append(f'{f.name}: the Renovate manager finds {found} in {steps} steps')
 if len(own) != 1 or not re.fullmatch(r'v\d+\.\d+\.\d+|(?!0{40})[0-9a-f]{40} # v\d+\.\d+\.\d+', next(iter(own))):
     errors.append(f'setup-raeva refs: {sorted(own)}')

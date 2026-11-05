@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  RAEVA_VERSION: 0.5.2
+  RAEVA_VERSION: 0.5.3
 
 jobs:
   action:

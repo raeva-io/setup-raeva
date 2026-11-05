@@ -33,7 +33,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
-      - uses: raeva-io/setup-raeva@7a17438e777be4f200f22ae3f383d98d107d1081 # v1.0.2
+      - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
         with:
           version: 0.5.3
           check: true

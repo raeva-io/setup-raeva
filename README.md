@@ -68,7 +68,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
         with:
-          version: 0.5.3
+          version: 0.6.0
           check: true
           check-mode: report-only
 ```
@@ -333,7 +333,7 @@ musl archive, which runs on any Linux; the glibc one needs glibc 2.34 or
 newer. Take the SHA-256 from the release's `sha256.sum`:
 
 ```sh
-curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.5.3/sha256.sum \
+curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.6.0/sha256.sum \
   | grep raeva-x86_64-unknown-linux-musl.tar.gz
 ```
 
@@ -401,7 +401,7 @@ shell installer skips the check when `sha256sum` is missing.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | required | An exact version such as `0.5.3`, or `latest`. |
+| `version` | required | An exact version such as `0.6.0`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
 | `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |

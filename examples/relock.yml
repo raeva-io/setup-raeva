@@ -79,7 +79,7 @@ jobs:
       # Dependabot secrets, as in private.yml (README, "Bot pull requests").
       - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
         with:
-          version: 0.5.3
+          version: 0.6.0
           relock: true
           working-directory: ${{ matrix.root }}
       - id: diff

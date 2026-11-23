@@ -47,6 +47,6 @@ jobs:
       # check errors fail.
       - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
         with:
-          version: 0.5.3
+          version: 0.6.0
           check: true
           check-mode: report-only

@@ -46,7 +46,7 @@ jobs:
           settings-path: ${{ runner.temp }}
       - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
         with:
-          version: 0.5.3
+          version: 0.6.0
           check: true
           cache: false
           settings: ${{ runner.temp }}/settings.xml
@@ -61,6 +61,6 @@ jobs:
           persist-credentials: false
       - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
         with:
-          version: 0.5.3
+          version: 0.6.0
           cache: false
           lock-diff: only

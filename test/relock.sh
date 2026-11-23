@@ -419,9 +419,19 @@ relock_in "$t/jdks"
 code=$?
 [[ $code -eq 0 && "$(lock_targets "$t/jdks")" == "$expected_targets" ]] \
   && ok "a conflicted lock keeps every platform and JDK" || { bad "multi-JDK conflict (exit $code)"; cat "$t/jdks.log"; }
-(cd "$t/jdks" && "$RAEVA_BUILD" -q sync --frozen > "$t/jdks-frozen.log" 2>&1) \
+# --frozen checks the JDK it runs on against [lock] jdks, so give it one
+# whose release file names the version, whatever the runner's default is.
+jdk_home() { # <version>: a JDK home that only has a release file
+  mkdir -p "$t/jdk-$1" && printf 'JAVA_VERSION="%s"\n' "$1" > "$t/jdk-$1/release"
+  echo "$t/jdk-$1"
+}
+(cd "$t/jdks" && JAVA_HOME="$(jdk_home 21.0.5)" "$RAEVA_BUILD" -q sync --frozen > "$t/jdks-frozen.log" 2>&1) \
   && ok "regenerated multi-JDK lock passes --frozen" \
-  || { bad "multi-JDK frozen check (JAVA_HOME=${JAVA_HOME-unset})"; cat "$t/jdks-frozen.log"; }
+  || { bad "multi-JDK frozen check"; cat "$t/jdks-frozen.log"; }
+(cd "$t/jdks" && JAVA_HOME="$(jdk_home 25.0.1)" "$RAEVA_BUILD" -q sync --frozen > "$t/jdks-frozen25.log" 2>&1)
+code=$?
+[[ $code -eq 7 ]] && grep -q 'not this JDK (25.0.1)' "$t/jdks-frozen25.log" \
+  && ok "--frozen refuses a JDK the lock does not list" || { bad "unlisted JDK (exit $code)"; cat "$t/jdks-frozen25.log"; }
 
 # The bot branch's lock against main's: other gson pins on each side.
 mkdir -p "$t/conflict" && cp "$t/after/pom.xml" "$t/conflict/"

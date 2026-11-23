@@ -77,7 +77,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       # A private Maven repository needs its credentials here too, from
       # Dependabot secrets, as in private.yml (README, "Bot pull requests").
-      - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
+      - uses: raeva-io/setup-raeva@a3b070106e15b7dee9d0a1fb04b758dbf5449bc9 # v1.0.4
         with:
           version: 0.6.0
           relock: true

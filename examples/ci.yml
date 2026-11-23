@@ -45,7 +45,7 @@ jobs:
       # job summary, since GitHub folds raeva.lock in the pull request.
       # Remove check-mode when you want lock changes to fail the job. Other
       # check errors fail.
-      - uses: raeva-io/setup-raeva@5c37fe703e615a9c41f48ae8e97c4b4eceaf783d # v1.0.3
+      - uses: raeva-io/setup-raeva@a3b070106e15b7dee9d0a1fb04b758dbf5449bc9 # v1.0.4
         with:
           version: 0.6.0
           check: true

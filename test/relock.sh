@@ -406,33 +406,26 @@ relock_in "$t/jdks"
 code=$?
 [[ $code -eq 0 && "$(lock_targets "$t/jdks")" == "$expected_targets" ]] \
   && ok "relock preserves every platform and JDK" || { bad "multi-JDK relock (exit $code)"; cat "$t/jdks.log"; }
-sed 's/^conflict //' > "$t/jdks/raeva.lock" <<'LOCK'
-schema_version = 7
-conflict <<<<<<< ours
-[[platforms]]
-targets = ["linux-x86_64@17", "linux-x86_64@21"]
-conflict =======
-[[platforms]]
-targets = [
-  "macos-aarch64@17",
-  "macos-aarch64@21",
-]
-conflict >>>>>>> theirs
-[[inputs]]
-target = "linux-x86_64@17"
-LOCK
+# A conflict between two locks that both read, as a merge of two relocked
+# branches leaves it: the sync keeps the pins of both sides and every
+# platform and JDK the text names.
+conflict_of() { # <ours> <theirs>: one conflict around the whole file
+  printf '<<<<<<< ours\n'; cat "$1"; printf '=======\n'; cat "$2"; printf '>>>>>>> theirs\n'
+}
+cp "$t/jdks/raeva.lock" "$t/jdks-ours.lock"
+sed 's/^config_hash = "[0-9a-f]*"/config_hash = "0"/' "$t/jdks-ours.lock" > "$t/jdks-theirs.lock"
+conflict_of "$t/jdks-ours.lock" "$t/jdks-theirs.lock" > "$t/jdks/raeva.lock"
 relock_in "$t/jdks"
 code=$?
 [[ $code -eq 0 && "$(lock_targets "$t/jdks")" == "$expected_targets" ]] \
-  && ok "conflicted target text preserves every platform and JDK" || { bad "multi-JDK conflict (exit $code)"; cat "$t/jdks.log"; }
+  && ok "a conflicted lock keeps every platform and JDK" || { bad "multi-JDK conflict (exit $code)"; cat "$t/jdks.log"; }
 (cd "$t/jdks" && "$RAEVA_BUILD" -q sync --frozen >/dev/null 2>&1) \
   && ok "regenerated multi-JDK lock passes --frozen" || bad "multi-JDK frozen check"
 
-# A lock with merge conflict markers, as a rebase leaves it: relock reads the
-# platforms from its text and writes it again; strict parsing would refuse it.
+# The bot branch's lock against main's: other gson pins on each side.
 mkdir -p "$t/conflict" && cp "$t/after/pom.xml" "$t/conflict/"
-awk 'NR == 4 { print "<<<<<<< HEAD" } { print } NR == 6 { print "======="; print "model_hash = \"0\""; print ">>>>>>> main" }' \
-  "$t/after/raeva.lock" > "$t/conflict/raeva.lock"
+git -C "$t/dev" show main:raeva.lock > "$t/main.lock"
+conflict_of "$t/after/raeva.lock" "$t/main.lock" > "$t/conflict/raeva.lock"
 "$RAEVA_BUILD" -q -C "$t/conflict" lock info >/dev/null 2>&1 && bad "test setup: the conflicted lock parses"
 relock_in "$t/conflict"
 code=$?
@@ -441,11 +434,23 @@ grep -q "^relocked-platforms=$platforms\$" "$t/conflict.out" && ok "conflicted l
 (cd "$t/conflict" && "$RAEVA_BUILD" -q sync --frozen --platforms "$platforms" >/dev/null 2>&1) && ok "rewritten lock passes --frozen" || bad "rewritten lock passes --frozen"
 grep -q "raeva.lock written again" "$t/conflict.summary" && ok "relock writes a summary" || bad "relock writes a summary"
 
-# A lock that names no platform: relock locks the runner's and warns.
+# A side that does not read has pins the sync cannot keep, so relock stops
+# and names the ways out; it never starts over without them.
+mkdir -p "$t/broken" && cp "$t/after/pom.xml" "$t/broken/"
+awk 'NR == 4 { print "<<<<<<< HEAD" } { print } NR == 6 { print "======="; print "model_hash = \"0\""; print ">>>>>>> main" }' \
+  "$t/after/raeva.lock" > "$t/broken/raeva.lock"
+cp "$t/broken/raeva.lock" "$t/broken.before"
+relock_in "$t/broken"
+code=$?
+[[ $code -eq 3 ]] && grep -q "take one side's lock" "$t/broken.log" && cmp -s "$t/broken/raeva.lock" "$t/broken.before" \
+  && ok "a conflict side that does not read stops relock" || { bad "unreadable conflict side (exit $code)"; cat "$t/broken.log"; }
+
+# A lock that does not read at all is refused the same way.
 mkdir -p "$t/garbage" && cp "$t/after/pom.xml" "$t/garbage/" && printf 'garbage' > "$t/garbage/raeva.lock"
 relock_in "$t/garbage"
 code=$?
-[[ $code -eq 0 ]] && grep -q "names no platform" "$t/garbage.log" && ok "relock warns when no platform is named" || bad "relock warns when no platform is named (exit $code)"
+[[ $code -eq 3 && "$(cat "$t/garbage/raeva.lock")" == garbage ]] && ok "relock refuses a lock that does not read" \
+  || { bad "relock refuses a lock that does not read (exit $code)"; cat "$t/garbage.log"; }
 
 echo "passed $pass, failed $fail"
 [[ $fail -eq 0 ]]

@@ -419,8 +419,9 @@ relock_in "$t/jdks"
 code=$?
 [[ $code -eq 0 && "$(lock_targets "$t/jdks")" == "$expected_targets" ]] \
   && ok "a conflicted lock keeps every platform and JDK" || { bad "multi-JDK conflict (exit $code)"; cat "$t/jdks.log"; }
-(cd "$t/jdks" && "$RAEVA_BUILD" -q sync --frozen >/dev/null 2>&1) \
-  && ok "regenerated multi-JDK lock passes --frozen" || bad "multi-JDK frozen check"
+(cd "$t/jdks" && "$RAEVA_BUILD" -q sync --frozen > "$t/jdks-frozen.log" 2>&1) \
+  && ok "regenerated multi-JDK lock passes --frozen" \
+  || { bad "multi-JDK frozen check (JAVA_HOME=${JAVA_HOME-unset})"; cat "$t/jdks-frozen.log"; }
 
 # The bot branch's lock against main's: other gson pins on each side.
 mkdir -p "$t/conflict" && cp "$t/after/pom.xml" "$t/conflict/"

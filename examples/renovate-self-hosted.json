@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "packageRules": [{ "matchManagers": ["maven"], "groupName": "maven" }],
   "postUpgradeTasks": {
     "commands": ["raeva sync"],
     "fileFilters": ["raeva.lock"],

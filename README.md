@@ -110,7 +110,7 @@ Add them one at a time, after the check works.
 | `examples/relock.yml` | Writes `raeva.lock` again on Dependabot pull requests and pushes it to the PR branch. |
 | `examples/private.yml` | A public repository whose build reads a private Maven repository, with a credential-free job for fork pull requests. |
 | `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for a dependency graph without version ranges or SNAPSHOTs, transitive ones included. |
-| `examples/renovate-self-hosted.json` | `postUpgradeTasks` for a self-hosted Renovate. |
+| `examples/renovate-self-hosted.json` | `postUpgradeTasks` for a self-hosted Renovate, with the Maven updates in one group. |
 | `examples/gitlab-ci.yml`, `examples/Jenkinsfile` | The same check on GitLab CI and Jenkins. |
 
 ## What fails the check

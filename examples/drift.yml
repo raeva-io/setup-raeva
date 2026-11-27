@@ -29,7 +29,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@a3b070106e15b7dee9d0a1fb04b758dbf5449bc9 # v1.0.4
         with:
-          version: 0.6.0
+          version: 0.6.1
           cache: false
       - name: Resolve again and compare
         run: |

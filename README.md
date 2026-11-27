@@ -68,7 +68,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@a3b070106e15b7dee9d0a1fb04b758dbf5449bc9 # v1.0.4
         with:
-          version: 0.6.0
+          version: 0.6.1
           check: true
           check-mode: report-only
 ```
@@ -92,11 +92,17 @@ commits before you make a blocking check required (see "Bot pull
 requests").
 
 The examples pin this action by commit SHA. Its releases are immutable, so
-`@v1.0.2` names the same commit. Dependabot and Renovate update either form.
+`@v1.0.4` names the same commit. Dependabot and Renovate update either form.
 
 Set `version` to an exact raeva release, 0.5.0 or newer, the one your
 developers use. A lock written by a newer raeva can use a schema that an older
-one refuses; the check then fails and asks you to raise `version`.
+one refuses; the check then fails and asks you to raise `version`. A newer
+raeva also refuses a lock of an older schema (exit 3, `LOCKFILE_INVALID`), as
+0.6.1 refuses a schema 9 lock. When you raise `version` across a schema
+change, run a plain `raeva sync` with the new release and commit `raeva.lock`
+in the same pull request. With `vuln: true`, the scan of that pull request
+still fails with exit 3: the new raeva cannot read the base commit's lock as
+its baseline.
 
 ## Recipes
 
@@ -110,7 +116,7 @@ Add them one at a time, after the check works.
 | `examples/relock.yml` | Writes `raeva.lock` again on Dependabot pull requests and pushes it to the PR branch. |
 | `examples/private.yml` | A public repository whose build reads a private Maven repository, with a credential-free job for fork pull requests. |
 | `examples/enforce.yml` | Builds offline from the locked artifacts only, with Maven Trusted Checksums from `raeva export-checksums`, for a dependency graph without version ranges or SNAPSHOTs, transitive ones included. |
-| `examples/renovate-self-hosted.json` | `postUpgradeTasks` for a self-hosted Renovate. |
+| `examples/renovate-self-hosted.json` | `postUpgradeTasks` for a self-hosted Renovate, with the Maven updates in one group. |
 | `examples/gitlab-ci.yml`, `examples/Jenkinsfile` | The same check on GitLab CI and Jenkins. |
 
 ## What fails the check
@@ -140,7 +146,10 @@ jdks = ["17", "21"]
 
 The lock then holds one result per JDK, and the check passes on any JDK the
 list names. Without `jdks`, run the check on the JDK the lock was written
-with. Set `JAVA_HOME` locally too: without it, raeva assumes Java 17.
+with. raeva takes the JDK that `mvn` would run, from `JAVA_HOME` or else the
+`java` on `PATH`. On a machine with neither, `raeva sync` and the check fail
+with exit 3 where the JDK version decides what is locked, unless `[lock] jdks`
+names the JDKs.
 
 ## Bot pull requests
 
@@ -187,7 +196,9 @@ and accept `renovate[bot]` in the relock job's `if:`. A self-hosted Renovate
 writes the lock itself with `postUpgradeTasks`, as in
 `examples/renovate-self-hosted.json`; its admin installs raeva on the Renovate
 host and allows the command in the global `allowedCommands`, such as
-`["^raeva sync$"]`.
+`["^raeva sync$"]`. For a project whose profiles activate by JDK, list the
+JDKs in `[lock] jdks`, or give the host the JDK the check runs on as its
+`java` on `PATH`.
 
 The relock workflow never pushes to main or uses `pull_request_target`.
 
@@ -219,6 +230,10 @@ input. Renovate updates `version` with a regex manager in `renovate.json`:
   ]
 }
 ```
+
+When the new release changes the lock schema, the pull request that raises
+`version` needs a `raeva sync` with that release and the lock commit before
+the check passes.
 
 A Maven update rewrites part of `raeva.lock`, so once one Dependabot pull
 request merges, another that changed nearby lines of the lock conflicts.
@@ -333,7 +348,7 @@ musl archive, which runs on any Linux; the glibc one needs glibc 2.34 or
 newer. Take the SHA-256 from the release's `sha256.sum`:
 
 ```sh
-curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.6.0/sha256.sum \
+curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.6.1/sha256.sum \
   | grep raeva-x86_64-unknown-linux-musl.tar.gz
 ```
 
@@ -401,7 +416,7 @@ shell installer skips the check when `sha256sum` is missing.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | required | An exact version such as `0.6.0`, or `latest`. |
+| `version` | required | An exact version such as `0.6.1`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
 | `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |

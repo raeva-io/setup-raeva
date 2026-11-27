@@ -68,7 +68,7 @@ jobs:
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
       - uses: raeva-io/setup-raeva@a3b070106e15b7dee9d0a1fb04b758dbf5449bc9 # v1.0.4
         with:
-          version: 0.6.0
+          version: 0.6.1
           check: true
           check-mode: report-only
 ```
@@ -98,7 +98,7 @@ Set `version` to an exact raeva release, 0.5.0 or newer, the one your
 developers use. A lock written by a newer raeva can use a schema that an older
 one refuses; the check then fails and asks you to raise `version`. A newer
 raeva also refuses a lock of an older schema (exit 3, `LOCKFILE_INVALID`), as
-0.6.0 refuses a schema 8 lock. When you raise `version` across a schema
+0.6.1 refuses a schema 9 lock. When you raise `version` across a schema
 change, run a plain `raeva sync` with the new release and commit `raeva.lock`
 in the same pull request. With `vuln: true`, the scan of that pull request
 still fails with exit 3: the new raeva cannot read the base commit's lock as
@@ -348,7 +348,7 @@ musl archive, which runs on any Linux; the glibc one needs glibc 2.34 or
 newer. Take the SHA-256 from the release's `sha256.sum`:
 
 ```sh
-curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.6.0/sha256.sum \
+curl -fsSL https://github.com/raeva-io/raeva/releases/download/v0.6.1/sha256.sum \
   | grep raeva-x86_64-unknown-linux-musl.tar.gz
 ```
 
@@ -416,7 +416,7 @@ shell installer skips the check when `sha256sum` is missing.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | required | An exact version such as `0.6.0`, or `latest`. |
+| `version` | required | An exact version such as `0.6.1`, or `latest`. |
 | `verify` | `attestation` | `attestation` checks the SHA-256 and the build attestation. `sha256` checks the SHA-256 only, for runners without `gh`. |
 | `token` | `github.token` | Read token for the attestation, a private release download, and the base commit's lock. |
 | `cache` | `true` | Restore the artifact store and metadata cache; pushes to the default branch also save them. |

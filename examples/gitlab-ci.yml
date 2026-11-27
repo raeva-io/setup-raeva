@@ -4,7 +4,7 @@
 # RAEVA_ARCHIVE (see "Other CI systems" in the setup-raeva README). Pinning it here means
 # a replaced release asset fails the job. Add .raeva/ to .gitignore.
 variables:
-  RAEVA_VERSION: "0.6.0"
+  RAEVA_VERSION: "0.6.1"
   RAEVA_ARCHIVE: "raeva-x86_64-unknown-linux-musl.tar.gz"
   RAEVA_SHA256: "<sha256 from sha256.sum>"
   # GitLab caches only paths inside the project directory.

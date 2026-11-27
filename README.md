@@ -66,7 +66,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21" # a JDK listed in [lock] jdks, or the JDK the lock was written with
-      - uses: raeva-io/setup-raeva@a3b070106e15b7dee9d0a1fb04b758dbf5449bc9 # v1.0.4
+      - uses: raeva-io/setup-raeva@ff53a748781325a8a1276d5f4049d8d3f8b89617 # v1.0.5
         with:
           version: 0.6.1
           check: true
@@ -92,7 +92,7 @@ commits before you make a blocking check required (see "Bot pull
 requests").
 
 The examples pin this action by commit SHA. Its releases are immutable, so
-`@v1.0.4` names the same commit. Dependabot and Renovate update either form.
+`@v1.0.5` names the same commit. Dependabot and Renovate update either form.
 
 Set `version` to an exact raeva release, 0.5.0 or newer, the one your
 developers use. A lock written by a newer raeva can use a schema that an older
